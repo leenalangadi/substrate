@@ -2103,7 +2103,7 @@ function renderLoop(lt) {
 // timeline so it follows each scene and loops with the animation.
 // Browsers only allow audio after a user gesture, so the first
 // click/tap/key turns the sound on.
-const MU_MAX = 3200;
+const MU_MAX = 4200;
 const muT = new Float32Array(MU_MAX), muD = new Float32Array(MU_MAX), muV = new Float32Array(MU_MAX);
 const muM = new Uint8Array(MU_MAX), muC = new Uint8Array(MU_MAX);
 let muN = 0;
@@ -2219,6 +2219,89 @@ const DESERT = 'D5:1 Eb5:1 F#5:1 G5:1 A5:2 G5:1 F#5:1 ' +
   'A5:1 Bb5:1 A5:1 G5:1 F#5:1 G5:1 A5:2 ' +
   'G5:1 F#5:1 Eb5:1 F#5:1 D5:4';
 
+// Sound effects layered over the music (5 sine beep, 6 noise whoosh,
+// 7 filtered buzz; 3 noise and 4 kick are shared with the drums).
+function beep(t, n, d, v) { nt(5, t, n, d, v); }
+function step(t, v) { nt(3, t, 45, 0.03, v || 0.035); }
+function crackle(t0, t1, rate, v) {
+  for (let t = t0, k = 0; t < t1; t += rate * (0.5 + hash1(k * 13 + 7)), k++) nt(3, t, 96 + (k % 5), 0.012, v * (0.5 + hash1(k)));
+}
+function heartbeat(t, v) { kick(t, v); kick(t + 0.16, v * 0.7); }
+function crickets(t0, t1) {
+  for (let t = t0, k = 0; t < t1; t += 0.7 + hash1(k * 5) * 0.9, k++) {
+    for (let j = 0; j < 3; j++) beep(t + j * 0.045, 110, 0.02, 0.006);
+  }
+}
+
+function buildSfx() {
+  const s = (i) => SCENES[i].start, e = (i) => SCENES[i].start + SCENES[i].dur;
+  let b;
+
+  // INTRO: the first pixel, EEG crackle as the trace grows, pen scratches at the desk
+  b = s(S_INTRO);
+  beep(b + 0.05, 'A6', 0.05, 0.02);
+  crackle(b + 1.6, e(S_INTRO), 0.12, 0.02);
+  for (let t = b + 3.0; t < e(S_INTRO); t += 0.2) nt(3, t, 110, 0.03, 0.012);
+
+  // DISCOVERY: neurons firing, then seizure discharges (zap + buzz)
+  b = s(S_DISCOVERY);
+  for (let k = 0; k < 7; k++) { const t = b + 0.3 + k * 0.28; nt(5, t, 96 - (k % 3) * 4, 0.035, 0.012); }
+  for (let k = 0; k < 5; k++) {
+    const t = b + 2 + k * 0.7;
+    nt(7, t, 33, 0.28, 0.05); nt(3, t, 80, 0.12, 0.05);
+    crackle(t + 0.05, t + 0.4, 0.04, 0.03);
+  }
+
+  // LOCALIZATION: EEG spike pings travelling to the focus
+  b = s(S_LOCALIZATION);
+  for (let t = b + 1.0; t < e(S_LOCALIZATION); t += 2 / 3) { beep(t, 'E7', 0.04, 0.02); beep(t + 0.12, 'B6', 0.04, 0.012); }
+  crackle(b, b + 1.0, 0.1, 0.02);
+
+  // SURGERY: heart monitor, abnormal crackle that calms down
+  b = s(S_SURGERY);
+  for (let t = b + 0.2; t < e(S_SURGERY); t += 0.85) beep(t, 'B6', 0.09, 0.022);
+  crackle(b, b + 2.0, 0.07, 0.03);
+  nt(7, b + 0.3, 33, 0.25, 0.035); nt(7, b + 1.2, 33, 0.25, 0.03);
+
+  // PROGRAM: footsteps as each person arrives; the monitoring room
+  b = s(S_PROGRAM);
+  const arr = [0.9, 1.6, 1.9, 2.2];
+  for (let i = 0; i < arr.length; i++) { step(b + arr[i] - 0.3); step(b + arr[i] - 0.05); }
+  for (let t = b + 0.5; t < e(S_PROGRAM) - 0.8; t += 1.0) beep(t, 'B6', 0.08, 0.014);
+  nt(6, b + 4.4, 96, 1.1, 0.03);
+
+  // SAUDI ARABIA: the flight, the map forming, night outside the hospital
+  b = s(S_SAUDI);
+  nt(6, b + 0.8, 88, 1.8, 0.07);
+  for (let k = 0; k < 8; k++) beep(b + 2.5 + k * 0.11, 100 - (k % 4) * 3, 0.03, 0.012);
+  crickets(b + 4.0, e(S_SAUDI));
+
+  // MENTORSHIP: a tap on the board as he points
+  b = s(S_MENTOR);
+  nt(3, b + 0.85, 60, 0.03, 0.05); nt(3, b + 1.0, 60, 0.03, 0.04);
+  step(b + 2.7); step(b + 2.95);
+
+  // TEACHING: chalk on the board, pages as the students take their diagrams
+  b = s(S_TEACHING);
+  for (let k = 0; k < 5; k++) nt(3, b + 0.8 + k * 0.07, 104, 0.03, 0.03);
+  for (let k = 0; k < 3; k++) nt(6, b + 3.3 + k * 0.08, 110, 0.18, 0.025);
+
+  // LEGACY: night crickets, his footsteps as he walks away, a newcomer arriving
+  b = s(S_LEGACY);
+  crickets(b, b + 6.0);
+  for (let t = b + 1.4; t < b + 5.4; t += 2 / 7) step(t, 0.03);
+  for (let t = b + 2.2; t < b + 3.9; t += 0.25) step(t, 0.025);
+
+  // MEMORIAL: a soft heartbeat under each blink of the pulse
+  b = s(S_MEMORIAL);
+  for (let t = 0; t < 9.3; t += 1.6) heartbeat(b + t, 0.12);
+
+  // LOOP: the pulse, blink and blink
+  b = s(S_LOOP);
+  heartbeat(b + 0.9, 0.1);
+  beep(e(S_LOOP) - 0.1, 'A6', 0.05, 0.015);
+}
+
 function buildScore() {
   muN = 0;
   const s = (i) => SCENES[i].start, e = (i) => SCENES[i].start + SCENES[i].dur;
@@ -2308,6 +2391,8 @@ function buildScore() {
   kick(b);
   nt(1, b + 0.9, 'G6', 0.1, 0.035);
 
+  buildSfx();
+
   // sort events by time (startup only)
   const idx = [];
   for (let i = 0; i < muN; i++) idx.push(i);
@@ -2342,7 +2427,25 @@ function playNote(ac, bus, I, ch, when, midi, dur, vol) {
   const g2 = ac.createGain();
   g2.connect(bus);
   let src;
-  if (ch === 4) {
+  if (ch === 5) {
+    src = ac.createOscillator(); src.type = 'sine';
+    src.frequency.value = mtof(midi);
+    src.connect(g2);
+  } else if (ch === 6) {
+    // whoosh: looping noise through a band-pass that sweeps up and back down
+    src = ac.createBufferSource(); src.buffer = I.noise; src.loop = true;
+    const f = ac.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.2;
+    f.frequency.setValueAtTime(300, when);
+    f.frequency.exponentialRampToValueAtTime(mtof(midi) / 4, when + dur * 0.5);
+    f.frequency.exponentialRampToValueAtTime(300, when + dur);
+    src.connect(f); f.connect(g2);
+  } else if (ch === 7) {
+    // electrical buzz
+    src = ac.createOscillator(); src.type = 'sawtooth';
+    src.frequency.value = mtof(midi);
+    const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 900;
+    src.connect(f); f.connect(g2);
+  } else if (ch === 4) {
     // kick: a fast downward pitch sweep on a triangle
     src = ac.createOscillator(); src.type = 'triangle';
     src.frequency.setValueAtTime(160, when);
@@ -2365,8 +2468,10 @@ function playNote(ac, bus, I, ch, when, midi, dur, vol) {
     src.connect(g2);
   }
   g2.gain.setValueAtTime(0, when);
-  g2.gain.linearRampToValueAtTime(vol, when + 0.006);
-  g2.gain.linearRampToValueAtTime(vol * 0.7, when + Math.min(0.08, dur * 0.5));
+  // music sits slightly under the sound effects
+  if (ch <= 2) vol *= 0.85;
+  g2.gain.linearRampToValueAtTime(vol, when + (ch === 6 ? dur * 0.4 : 0.006));
+  if (ch !== 6) g2.gain.linearRampToValueAtTime(vol * 0.7, when + Math.min(0.08, dur * 0.5));
   g2.gain.setValueAtTime(vol * 0.7, when + dur);
   g2.gain.linearRampToValueAtTime(0, when + dur + 0.06);
   src.start(when);
