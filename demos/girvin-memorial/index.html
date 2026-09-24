@@ -1,0 +1,2272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>In Memory of Dr. John P. Girvin</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: #070916;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    image-rendering: crisp-edges;
+    image-rendering: pixelated;
+  }
+  /* Fallback when the window is smaller than 160x90: keep the whole scene visible. */
+  canvas.fit {
+    width: 100vw !important;
+    height: 56.25vw !important;
+    max-height: 100vh;
+    max-width: 177.78vh;
+  }
+</style>
+</head>
+<body>
+<canvas id="view" width="160" height="90" aria-label="Pixel-art memorial animation honoring Dr. John P. Girvin, 1934 to 2024"></canvas>
+<script>
+'use strict';
+/*
+ * In Memory of Dr. John P. Girvin (1934 - 2024)
+ * A procedural 16-bit pixel-art memorial short.
+ *
+ * Everything is drawn at a logical resolution of 160x90 into an offscreen
+ * canvas using only filled rectangles in a fixed palette, then scaled up to
+ * the visible canvas by the largest integer factor that fits the window.
+ *
+ * Story: BRAIN -> EPILEPSY -> LOCALIZATION -> SURGERY -> PROGRAM BUILDING
+ *        -> SAUDI ARABIA -> TEACHING -> LEGACY -> MEMORIAL -> (loop)
+ * One small electric-cyan pixel carries the story from start to end.
+ */
+
+// =====================================================================
+// 1. CANVAS INITIALIZATION
+// =====================================================================
+const W = 160, H = 90;
+const view = document.getElementById('view');
+const vctx = view.getContext('2d');
+
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+
+// Main logical frame, the outgoing-scene buffer for transitions,
+// a compositing scratch buffer, and a layer used for pixel dissolves.
+const screenC = makeCanvas(W, H), sctx = screenC.getContext('2d');
+const bufA = makeCanvas(W, H), actx = bufA.getContext('2d');
+const tmpC = makeCanvas(W, H), tctx = tmpC.getContext('2d');
+const layC = makeCanvas(W, H), lctx = layC.getContext('2d');
+
+let viewScale = 1;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  // Largest integer scale that fits, measured in device pixels so it stays crisp.
+  let s = Math.floor(Math.min(window.innerWidth * dpr / W, window.innerHeight * dpr / H));
+  if (s < 1) {
+    s = 1;
+    view.classList.add('fit');
+  } else {
+    view.classList.remove('fit');
+    view.style.width = (W * s / dpr) + 'px';
+    view.style.height = (H * s / dpr) + 'px';
+  }
+  viewScale = s;
+  view.width = W * s;
+  view.height = H * s;
+  vctx.imageSmoothingEnabled = false;
+}
+window.addEventListener('resize', resize);
+
+// =====================================================================
+// 2. PALETTE  (every pixel on screen comes from this list)
+// =====================================================================
+const PAL = [
+  '#070916', '#0D1024', '#141735', '#1C2044', '#292652', '#37305F',
+  '#4A345C', '#663B54', '#8A4A4A',
+  '#B96A52', '#D58A62', '#E6B27A',
+  '#D9D4C7', '#F2EEE2', '#FFFFFF',
+  '#163D59', '#176B82', '#1CA7B8', '#5CE1E6',
+  '#5B4BC4', '#8175E5',
+  '#D9A441', '#F4D06F'
+];
+const BLK = 0, NV1 = 1, NV2 = 2, NV3 = 3, IND = 4, IND2 = 5,
+      PLM = 6, ROS = 7, BRK = 8,
+      SKD = 9, SKN = 10, SKL = 11,
+      GRY = 12, OFW = 13, WHT = 14,
+      TED = 15, TEA = 16, CYN = 17, CYL = 18,
+      VIO = 19, VIL = 20,
+      GLD = 21, GLL = 22;
+
+// Color ramps used by particles and lights (indexes into PAL).
+const RAMPS = [
+  new Uint8Array([CYL, CYN, TEA, TED]),          // 0 calm neural (cyan)
+  new Uint8Array([CYL, CYN, VIL, VIO, IND2]),    // 1 abnormal discharge (cyan -> violet)
+  new Uint8Array([WHT, CYL, CYN, TEA]),          // 2 EEG spark
+  new Uint8Array([WHT, GLL, GLD, ROS]),          // 3 legacy (gold)
+  new Uint8Array([IND2, IND, NV3]),              // 4 dust
+  new Uint8Array([CYL, CYN, TEA, TED, NV3])      // 5 rising star spark
+];
+const R_CALM = 0, R_ABN = 1, R_EEG = 2, R_GOLD = 3, R_DUST = 4, R_STAR = 5;
+
+// ---------------------------------------------------------------------
+// Low level pixel drawing. Every draw call goes through rect(), which
+// floors coordinates to integers and applies the integer camera offset.
+// ---------------------------------------------------------------------
+let g = sctx;
+let curFill = -1;
+let camX = 0, camY = 0;
+
+function useCtx(c) { g = c; curFill = -1; }
+
+function rect(x, y, w, h, c) {
+  if (curFill !== c) { g.fillStyle = PAL[c]; curFill = c; }
+  g.fillRect(Math.floor(x) + camX, Math.floor(y) + camY, w, h);
+}
+function px(x, y, c) { rect(x, y, 1, 1, c); }
+
+function clearTo(c) {
+  if (curFill !== c) { g.fillStyle = PAL[c]; curFill = c; }
+  g.fillRect(0, 0, W, H);
+}
+
+function drawImg(img, x, y) {
+  g.drawImage(img, Math.round(x) + camX, Math.round(y) + camY);
+}
+
+// Bresenham line. step>1 draws a dotted line; phase shifts the dots (marching).
+function line(x0, y0, x1, y1, c, step, phase) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  step = step || 1; phase = phase || 0;
+  const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+  const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy, i = 0;
+  for (;;) {
+    if ((((i + phase) % step) + step) % step === 0) px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+    i++;
+  }
+}
+
+// Light is simulated with discrete pixel rings: core -> ring -> sparse outer pixels.
+function glow(x, y, level, c0, c1, c2) {
+  x = Math.round(x); y = Math.round(y);
+  if (level <= 0) return;
+  if (level >= 5) {
+    px(x - 4, y, c2); px(x + 4, y, c2); px(x, y - 4, c2); px(x, y + 4, c2);
+    px(x - 2, y - 2, c2); px(x + 2, y - 2, c2); px(x - 2, y + 2, c2); px(x + 2, y + 2, c2);
+  }
+  if (level >= 4) {
+    px(x - 3, y, c2); px(x + 3, y, c2); px(x, y - 3, c2); px(x, y + 3, c2);
+    px(x - 1, y - 1, c1); px(x + 1, y - 1, c1); px(x - 1, y + 1, c1); px(x + 1, y + 1, c1);
+    px(x - 2, y, c1); px(x + 2, y, c1); px(x, y - 2, c1); px(x, y + 2, c1);
+  } else if (level >= 3) {
+    px(x - 2, y, c2); px(x + 2, y, c2); px(x, y - 2, c2); px(x, y + 2, c2);
+    px(x - 1, y - 1, c2); px(x + 1, y - 1, c2); px(x - 1, y + 1, c2); px(x + 1, y + 1, c2);
+  }
+  if (level >= 2) {
+    px(x - 1, y, c1); px(x + 1, y, c1); px(x, y - 1, c1); px(x, y + 1, c1);
+  }
+  px(x, y, level >= 4 ? WHT : c0);
+}
+
+// ---------------------------------------------------------------------
+// Math helpers (deterministic)
+// ---------------------------------------------------------------------
+function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+function seg(t, a, b) { return clamp01((t - a) / (b - a)); }
+function smooth(v) { return v * v * (3 - 2 * v); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function quant(v, n) { return Math.floor(v * n) / n; }
+function sq(v) { return v * v; }
+
+function hash2(x, y) {
+  let h = (Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+function hash1(n) { return hash2(n, 9173); }
+function vnoise(x) {
+  const i = Math.floor(x), f = x - i;
+  const a = hash1(i) * 2 - 1, b = hash1(i + 1) * 2 - 1;
+  return a + (b - a) * (f * f * (3 - 2 * f));
+}
+
+// Seeded PRNG so the whole film is deterministic.
+let seed = 1;
+function reseed(s) { seed = s | 0; }
+function rnd() {
+  seed = (seed + 0x6D2B79F5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+// ---------------------------------------------------------------------
+// Pixel dissolve masks. MASK[k] is opaque where a pixel's threshold is
+// below k/16. Used for scene transitions, text and layer dissolves.
+// ---------------------------------------------------------------------
+const MASK = [];
+function buildMasks() {
+  const thr = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      thr[y * W + x] = 0.62 * hash2(x >> 1, y >> 1) + 0.38 * hash2(x + 311, y + 977);
+    }
+  }
+  for (let k = 0; k <= 16; k++) {
+    const c = makeCanvas(W, H), cx = c.getContext('2d');
+    const img = cx.createImageData(W, H), d = img.data;
+    for (let i = 0; i < W * H; i++) {
+      if (thr[i] < k / 16) {
+        d[i * 4] = 7; d[i * 4 + 1] = 9; d[i * 4 + 2] = 22; d[i * 4 + 3] = 255;
+      }
+    }
+    cx.putImageData(img, 0, 0);
+    MASK.push(c);
+  }
+}
+function lvl(p) {
+  if (p <= 0) return 0;
+  if (p >= 1) return 16;
+  return Math.max(1, Math.min(15, Math.floor(p * 16)));
+}
+
+// Layers: draw anything, then composite it through a dissolve mask.
+let layerPrev = null;
+function beginLayer() {
+  layerPrev = g;
+  lctx.clearRect(0, 0, W, H);
+  useCtx(lctx);
+}
+function endLayer(p) {
+  const k = lvl(p);
+  useCtx(layerPrev);
+  if (k <= 0) return;
+  if (k < 16) {
+    lctx.globalCompositeOperation = 'destination-in';
+    lctx.drawImage(MASK[k], 0, 0);
+    lctx.globalCompositeOperation = 'source-over';
+  }
+  g.drawImage(layC, 0, 0);
+}
+function drawImgDissolve(img, x, y, p) {
+  if (p <= 0) return;
+  if (p >= 1) { drawImg(img, x, y); return; }
+  beginLayer(); drawImg(img, x, y); endLayer(p);
+}
+// Pixel fade to black over the whole frame.
+function fadeBlack(p) {
+  const k = lvl(p);
+  if (k > 0) g.drawImage(MASK[k], 0, 0);
+}
+
+// Pre-rendered static backdrops are drawn with a 2px margin so the
+// integer camera can drift without exposing an edge.
+const M = 2;
+function prerender(fn) {
+  const c = makeCanvas(W + M * 2, H + M * 2), cx = c.getContext('2d');
+  const pg = g, pcx = camX, pcy = camY;
+  useCtx(cx); camX = M; camY = M;
+  fn();
+  camX = pcx; camY = pcy; useCtx(pg);
+  return c;
+}
+function drawBackdrop(c) { g.drawImage(c, camX - M, camY - M); }
+
+// =====================================================================
+// 3. BITMAP FONT  (proportional 3x5 style, some 4-5 wide glyphs)
+// =====================================================================
+const FONT_DEF = {
+  A: '010 101 111 101 101', B: '110 101 110 101 110', C: '011 100 100 100 011',
+  D: '110 101 101 101 110', E: '111 100 110 100 111', F: '111 100 110 100 100',
+  G: '011 100 101 101 011', H: '101 101 111 101 101', I: '111 010 010 010 111',
+  J: '001 001 001 101 010', K: '101 101 110 101 101', L: '100 100 100 100 111',
+  M: '10001 11011 10101 10001 10001', N: '1001 1101 1011 1001 1001',
+  O: '010 101 101 101 010', P: '110 101 110 100 100', Q: '010 101 101 110 011',
+  R: '110 101 110 101 101', S: '011 100 010 001 110', T: '111 010 010 010 010',
+  U: '101 101 101 101 111', V: '101 101 101 101 010',
+  W: '10001 10001 10101 11011 10001', X: '101 101 010 101 101',
+  Y: '101 101 010 010 010', Z: '111 001 010 100 111',
+  '0': '111 101 101 101 111', '1': '010 110 010 010 111', '2': '110 001 010 100 111',
+  '3': '110 001 010 001 110', '4': '101 101 111 001 001', '5': '111 100 110 001 110',
+  '6': '011 100 111 101 111', '7': '111 001 010 010 010', '8': '111 101 111 101 111',
+  '9': '111 101 111 001 110',
+  '.': '0 0 0 0 1', ',': '00 00 00 01 10', '-': '000 000 111 000 000',
+  ':': '0 1 0 1 0', "'": '1 1 0 0 0', '&': '0110 1001 0110 1010 1101',
+  '—': '00000 00000 11111 00000 00000'
+};
+const EMDASH = 127;
+const glyphRows = new Uint8Array(128 * 5);
+const glyphW = new Uint8Array(128);
+function buildFont() {
+  for (const key in FONT_DEF) {
+    const code = key === '—' ? EMDASH : key.charCodeAt(0);
+    const rows = FONT_DEF[key].split(' ');
+    glyphW[code] = rows[0].length;
+    for (let r = 0; r < 5; r++) glyphRows[code * 5 + r] = parseInt(rows[r], 2);
+  }
+}
+function glyphCode(s, i) {
+  const c = s.charCodeAt(i);
+  return c === 8212 ? EMDASH : (c < 128 ? c : 0);
+}
+function textWidth(s, scale) {
+  let w = 0;
+  for (let i = 0; i < s.length; i++) {
+    const code = glyphCode(s, i);
+    w += (code === 32 ? 3 : glyphW[code]) + 1;
+  }
+  return (w - 1) * scale;
+}
+
+// drawPixelText: align 0=left 1=center 2=right. reveal (0..1) dissolves the
+// glyph pixels in and out. shadow is a palette index or -1.
+function drawPixelText(s, x, y, c, align, scale, reveal, shadow) {
+  if (reveal <= 0) return;
+  const pcx = camX, pcy = camY;
+  camX = 0; camY = 0;
+  const tw = textWidth(s, scale);
+  let cx = align === 1 ? x - (tw >> 1) : align === 2 ? x - tw : x;
+  cx = Math.round(cx); y = Math.round(y);
+  for (let i = 0; i < s.length; i++) {
+    const code = glyphCode(s, i);
+    if (code === 32) { cx += 4 * scale; continue; }
+    const w = glyphW[code];
+    for (let r = 0; r < 5; r++) {
+      const bits = glyphRows[code * 5 + r];
+      for (let k = 0; k < w; k++) {
+        if (!(bits & (1 << (w - 1 - k)))) continue;
+        const gx = cx + k * scale, gy = y + r * scale;
+        if (reveal < 1 && hash2(gx * 7 + 3, gy * 13 + 5) > reveal) continue;
+        if (shadow >= 0) rect(gx + 1, gy + 1, scale, scale, shadow);
+        rect(gx, gy, scale, scale, c);
+      }
+    }
+    cx += (w + 1) * scale;
+  }
+  camX = pcx; camY = pcy;
+}
+
+// Reveal helper: fades in over 0.5s from a, out over 0.4s from b.
+function rv(t, a, b) {
+  let v = seg(t, a, a + 0.5);
+  if (b !== undefined) v *= 1 - seg(t, b, b + 0.4);
+  return v;
+}
+
+// Cinematic caption band that rises from the bottom in 2px steps.
+function captionBand(t, t0, h, tOut) {
+  let p = seg(t, t0, t0 + 0.35);
+  if (tOut !== undefined) p *= 1 - seg(t, tOut, tOut + 0.35);
+  const hh = Math.round(quant(p, 6) * h / 2) * 2;
+  if (hh <= 0) return;
+  const pcx = camX, pcy = camY;
+  camX = 0; camY = 0;
+  rect(0, H - hh, W, hh, BLK);
+  rect(0, H - hh, W, 1, NV2);
+  camX = pcx; camY = pcy;
+}
+
+// =====================================================================
+// 4. SPRITE CONSTRUCTION  (procedural figures built from pixel clusters)
+// =====================================================================
+// Figure specs: palette choices for one character. headwear: 0 hair,
+// 1 head scarf, 2 ghutra. short: 1 draws the figure 2px shorter.
+function makeSpec(o) {
+  return {
+    hair: o.hair, hairHi: o.hairHi, hairSh: o.hairSh, brow: o.brow,
+    skin: o.skin, skinSh: o.skinSh, skinHi: o.skinHi,
+    coat: o.coat, coatSh: o.coatSh, coatHi: o.coatHi,
+    shirt: o.shirt, tie: o.tie,
+    pants: o.pants, pantsSh: o.pantsSh, shoes: o.shoes,
+    head: o.head || 0, short: o.short || 0
+  };
+}
+
+// Dr. Girvin: gray/white hair, light coat, dark trousers and shoes.
+const GIRVIN = makeSpec({
+  hair: GRY, hairHi: WHT, hairSh: VIL, brow: GRY,
+  skin: SKN, skinSh: SKD, skinHi: SKL,
+  coat: OFW, coatSh: GRY, coatHi: WHT, shirt: GRY, tie: TED,
+  pants: NV3, pantsSh: NV2, shoes: BLK
+});
+// Colleagues, students and the next generation (generic, not portraits).
+const DOC_A = makeSpec({ hair: NV2, hairHi: IND2, hairSh: NV1, brow: NV2, skin: SKD, skinSh: BRK, skinHi: SKN,
+  coat: OFW, coatSh: GRY, coatHi: WHT, shirt: TEA, tie: NV3, pants: IND, pantsSh: NV3, shoes: BLK, short: 1 });
+const DOC_B = makeSpec({ hair: BRK, hairHi: SKD, hairSh: ROS, brow: ROS, skin: SKL, skinSh: SKN, skinHi: WHT,
+  coat: OFW, coatSh: GRY, coatHi: WHT, shirt: TED, tie: TED, pants: NV3, pantsSh: NV2, shoes: BLK, short: 1 });
+const DOC_S = makeSpec({ hair: IND2, hairHi: PLM, hairSh: IND, brow: NV2, skin: SKN, skinSh: SKD, skinHi: SKL,
+  coat: OFW, coatSh: GRY, coatHi: WHT, shirt: GRY, tie: GRY, pants: IND, pantsSh: NV3, shoes: BLK, head: 1, short: 1 });
+const DOC_G = makeSpec({ hair: NV2, hairHi: IND, hairSh: NV1, brow: NV2, skin: SKD, skinSh: BRK, skinHi: SKN,
+  coat: OFW, coatSh: GRY, coatHi: WHT, shirt: GRY, tie: GRY, pants: NV3, pantsSh: NV2, shoes: BLK, head: 2, short: 1 });
+const DOC_T = makeSpec({ hair: NV3, hairHi: IND, hairSh: NV2, brow: NV2, skin: SKL, skinSh: SKN, skinHi: WHT,
+  coat: TEA, coatSh: TED, coatHi: CYN, shirt: TED, tie: TED, pants: TED, pantsSh: NV3, shoes: BLK, short: 1 });
+const DOC_R = makeSpec({ hair: ROS, hairHi: BRK, hairSh: PLM, brow: NV2, skin: SKN, skinSh: SKD, skinHi: SKL,
+  coat: OFW, coatSh: GRY, coatHi: WHT, shirt: IND2, tie: IND2, pants: IND, pantsSh: NV3, shoes: BLK, head: 1, short: 1 });
+const STUDENT_1 = makeSpec({ hair: NV2, hairHi: IND2, hairSh: NV1, brow: NV2, skin: SKD, skinSh: BRK, skinHi: SKN,
+  coat: GRY, coatSh: VIL, coatHi: OFW, shirt: TED, tie: TED, pants: IND, pantsSh: NV3, shoes: BLK, short: 1 });
+const STUDENT_2 = makeSpec({ hair: TED, hairHi: TEA, hairSh: NV3, brow: NV2, skin: SKN, skinSh: SKD, skinHi: SKL,
+  coat: GRY, coatSh: VIL, coatHi: OFW, shirt: GRY, tie: GRY, pants: IND, pantsSh: NV3, shoes: BLK, head: 1, short: 1 });
+const STUDENT_3 = makeSpec({ hair: NV2, hairHi: IND, hairSh: NV1, brow: NV2, skin: SKL, skinSh: SKN, skinHi: WHT,
+  coat: GRY, coatSh: VIL, coatHi: OFW, shirt: GRY, tie: GRY, pants: NV3, pantsSh: NV2, shoes: BLK, head: 2, short: 1 });
+const CROWD = [DOC_A, DOC_S, DOC_G, DOC_B, STUDENT_2, DOC_R, STUDENT_1];
+
+// =====================================================================
+// 5. CHARACTER POSES
+// =====================================================================
+// One shared pose object (no allocation per frame). Values are smooth
+// floats that are quantized to integer pixels when drawn.
+const POSE = { facing: 1, arm: 0, back: 0, look: 0, bob: 0, walk: -1,
+  seated: false, surgical: false, point: false, sil: -1, sway: 0 };
+function resetPose() {
+  POSE.facing = 1; POSE.arm = 0; POSE.back = 0; POSE.look = 0; POSE.bob = 0;
+  POSE.walk = -1; POSE.seated = false; POSE.surgical = false; POSE.point = false;
+  POSE.sil = -1; POSE.sway = 0;
+  return POSE;
+}
+
+// Sprite-local drawing: a 20px-wide box that can be mirrored.
+let FX = 0, FY = 0, FF = 1, FSIL = -1;
+function sr(dx, dy, w, h, c) {
+  const xx = FF > 0 ? FX + dx : FX + 20 - dx - w;
+  rect(xx, FY + dy, w, h, FSIL >= 0 ? FSIL : c);
+}
+function sp(dx, dy, c) { sr(dx, dy, 1, 1, c); }
+
+function drawLeg(x, off, c, shoes, hi) {
+  sr(x, 25, 3, 4, c);
+  sr(x + ((off / 2) | 0), 29, 3, 3, c);
+  sr(x + off, 32, 4, 2, shoes);
+  sp(x + off + 3, 32, hi);
+  sp(x + 2, 25, hi);
+}
+
+function drawHead(T, L, S, P) {
+  // face
+  sr(8, 3 + T, 6, 5, S.skin);
+  sr(9, 8 + T, 4, 1, S.skin);
+  sr(10, 3 + T, 3, 1, S.skinHi);
+  sr(8, 4 + T, 1, 4, S.skinSh);
+  sp(13, 8 + T, S.skinSh);
+  // features (look shifts them to tilt the head)
+  const eyeY = P.surgical ? 5 : 5 + L;
+  sp(12, eyeY + T, NV2);
+  sr(11, eyeY - 1 + T, 2, 1, S.brow);
+  sp(14, 5 + L + T, S.skin);
+  sp(14, 6 + L + T, S.skinSh);
+  sp(12, 7 + L + T, S.skinSh);
+
+  if (S.head === 1) {
+    // head scarf
+    const c = S.hair;
+    sr(7, 0 + T, 7, 2, c); sp(9, 0 + T, S.hairHi); sp(10, 0 + T, S.hairHi);
+    sr(6, 2 + T, 8, 1, c);
+    sr(6, 3 + T, 3, 6, c);
+    sr(8, 8 + T, 1, 1, c);
+    sr(7, 9 + T, 6, 2, c);
+    sr(6, 6 + T, 1, 4, S.hairSh);
+  } else if (S.head === 2) {
+    // ghutra with agal and a short beard
+    sr(7, 0 + T, 7, 3, OFW); sp(9, 0 + T, WHT);
+    sr(7, 1 + T, 7, 1, NV1);
+    sr(5, 3 + T, 4, 7, OFW);
+    sr(5, 5 + T, 1, 5, GRY);
+    sr(10, 7 + T, 4, 2, S.hair);
+    sp(13, 6 + L + T, S.hair);
+  } else {
+    // hair
+    sr(8, 0 + T, 5, 1, S.hairHi);
+    sr(7, 1 + T, 7, 1, S.hair); sp(9, 1 + T, S.hairHi); sp(10, 1 + T, S.hairHi);
+    sr(6, 2 + T, 7, 1, S.hair);
+    sr(6, 3 + T, 3, 3, S.hair);
+    sr(6, 6 + T, 2, 1, S.hairSh);
+    sp(7, 7 + T, S.hairSh);
+    sp(9, 5 + T, S.skinSh); // ear
+  }
+  if (P.surgical) {
+    sr(7, 0 + T, 7, 2, TEA); sr(6, 2 + T, 8, 1, TEA); sp(9, 0 + T, CYN); sp(10, 0 + T, CYN);
+    sr(11, 6 + T, 4, 3, GRY); sp(10, 6 + T, GRY); sp(14, 6 + T, OFW);
+  }
+}
+
+function drawFrontArm(T, P, S, coat, coatSh) {
+  const a = P.arm;
+  const ang = 1.5708 + (-0.6109 - 1.5708) * a; // down (90deg) .. raised (-35deg)
+  const len = P.seated ? 8 : 10;
+  const sx = 12, sy = 11 + T;
+  const hx = sx + Math.round(Math.cos(ang) * len);
+  const hy = sy + Math.round(Math.sin(ang) * len);
+  if (a < 0.15) sr(11, 12 + T, 1, 8, coatSh);
+  // thick sleeve along a Bresenham path
+  let x0 = sx, y0 = sy;
+  const dx = Math.abs(hx - x0), stx = x0 < hx ? 1 : -1;
+  const dy = -Math.abs(hy - y0), sty = y0 < hy ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    sr(x0, y0, 2, 2, coat);
+    if (x0 === hx && y0 === hy) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += stx; }
+    if (e2 <= dx) { err += dx; y0 += sty; }
+  }
+  sp(hx, hy + 1, coatSh);
+  sr(hx, hy, 2, 2, S.skin);
+  sp(hx, hy + 1, S.skinSh);
+  if (P.point) sp(hx + 2, hy, S.skin);
+}
+
+// drawFigure: the shared character renderer (used for Dr. Girvin and others).
+// (x,y) is the top-left of a 20x34 box; feet rest on row y+33.
+function drawFigure(x, y, S, P) {
+  FX = Math.round(x); FY = Math.round(y); FF = P.facing; FSIL = P.sil;
+  const T = (S.short ? 2 : 0) + P.bob + (P.seated ? 6 : 0);
+  const L = P.look;
+  let coat = S.coat, coatSh = S.coatSh, coatHi = S.coatHi;
+  if (P.surgical) { coat = TEA; coatSh = TED; coatHi = CYN; }
+
+  // legs
+  if (P.seated) {
+    sr(9, 27, 8, 3, S.pants); sr(9, 29, 8, 1, S.pantsSh);
+    sr(14, 30, 3, 2, S.pants);
+    sr(14, 32, 5, 2, S.shoes);
+  } else {
+    let off = 0;
+    if (P.walk >= 0) { const f = P.walk & 3; off = f === 1 ? 2 : f === 3 ? -2 : 0; }
+    drawLeg(7, -off, S.pantsSh, S.shoes, S.pantsSh);
+    drawLeg(11, off, S.pants, S.shoes, S.pantsSh === NV2 ? IND : IND2);
+  }
+  // back arm
+  if (!P.seated) {
+    const b = P.back;
+    sr(5, 11 + T, 2, 6, coatSh);
+    sr(5 + b, 17 + T, 2, 4, coatSh);
+    sr(5 + b, 21 + T, 2, 2, S.skinSh);
+  } else {
+    sr(6, 11 + T, 2, 8, coatSh);
+  }
+  // coat / gown
+  if (!P.seated) {
+    sr(6, 10 + T, 9, 15, coat);
+    sr(5, 21 + T, 11, 4, coat);
+    sr(5, 21 + T, 1, 4, coatSh);
+    sr(5, 24 + T, 11, 1, coatSh);
+    if (P.sway > 0) sp(16, 23 + T, coat);
+    else if (P.sway < 0) sp(4, 23 + T, coatSh);
+    sr(6, 11 + T, 2, 13, coatSh);
+    sr(8, 16 + T, 1, 8, coatSh);
+  } else {
+    sr(6, 10 + T, 9, 12, coat);
+    sr(7, 21 + T, 9, 2, coat);
+    sr(7, 22 + T, 9, 1, coatSh);
+    sr(6, 11 + T, 2, 10, coatSh);
+  }
+  sr(8, 10 + T, 5, 1, coatHi);
+  if (!P.surgical) {
+    sr(11, 10 + T, 2, 3, S.shirt);
+    sp(12, 11 + T, S.tie); sp(12, 12 + T, S.tie); sp(12, 13 + T, S.tie);
+    sp(10, 10 + T, coatSh); sp(10, 11 + T, coatSh); sp(11, 13 + T, coatSh); sp(11, 14 + T, coatSh);
+    if (!P.seated) { sr(13, 19 + T, 2, 1, coatSh); sp(14, 18 + T, TEA); }
+  } else {
+    sr(11, 10 + T, 2, 1, coatSh);
+  }
+  // neck + head
+  sr(10, 9 + T, 2, 1, S.skinSh);
+  drawHead(T, L, S, P);
+  // front arm last so it reads over the coat
+  drawFrontArm(T, P, S, coat, coatSh);
+  FSIL = -1;
+}
+
+// Tiny distant figure (7x14) for the legacy crowd.
+function drawTiny(x, y, S, walk) {
+  FX = Math.round(x); FY = Math.round(y); FF = 1; FSIL = -1;
+  if (S.head === 1) { sr(2, 0, 3, 1, S.hair); sr(1, 1, 1, 3, S.hair); }
+  else if (S.head === 2) { sr(2, 0, 3, 1, OFW); sr(1, 1, 1, 3, OFW); }
+  else { sr(2, 0, 3, 1, S.hair); sp(1, 1, S.hair); }
+  sr(2, 1, 3, 2, S.skin);
+  sr(1, 3, 5, 6, S.coat);
+  sr(1, 4, 1, 5, S.coatSh);
+  sp(3, 3, S.shirt);
+  const o = walk >= 0 ? (walk & 1) : 0;
+  sr(2, 9, 1, 4, S.pants); sr(4 - o, 9, 1, 4, S.pants);
+  sr(2, 13, 2, 1, S.shoes); sr(4 - o, 13, 2, 1, S.shoes);
+}
+
+// Head position of a figure box (for connecting lines and pulses).
+function headX(x, S, facing) { return Math.round(x) + (facing > 0 ? 11 : 8); }
+function headY(y, S, P) { return Math.round(y) + (S.short ? 2 : 0) + (P && P.seated ? 6 : 0) + 4; }
+
+// Breathing: a 1px body bob on a slow, quantized cycle.
+function breath(t, offs) { return Math.floor(t * 0.8 + offs) & 1; }
+
+// =====================================================================
+// 6. BRAIN RENDERER
+// =====================================================================
+// Side view facing left. Regions: 1 frontal, 2 parietal, 3 occipital,
+// 4 temporal (the focus region), 5 cerebellum, 6 brainstem.
+function sylvian(u) { return 0.18 - 0.2 * (u + 0.6); }
+function brainRegion(u, v) {
+  const e1 = sq(u / 0.98) + sq((v + 0.12) / 0.76) < 1 && v < 0.30;
+  const e3 = sq((u + 0.6) / 0.36) + sq((v - 0.1) / 0.3) < 1;
+  const et = sq((u + 0.1) / 0.52) + sq((v - 0.3) / 0.25) < 1;
+  if (e1 || e3 || et) {
+    if (et && v > sylvian(u)) return 4;
+    const cs = 0.1 - 0.22 * (v + 0.85) / 0.9 + 0.02 * Math.sin(v * 22);
+    if (u < cs) return 1;
+    if (u < 0.55 - 0.12 * v) return 2;
+    return 3;
+  }
+  if (sq((u - 0.56) / 0.32) + sq((v - 0.47) / 0.2) < 1) return 5;
+  if (v > 0.3 && v < 0.98 && u > 0.12 + 0.1 * (v - 0.3) && u < 0.3 + 0.08 * (v - 0.3)) return 6;
+  return 0;
+}
+
+// modes: 0 shaded, 1 cortical map, 2 line art (ink), 3 focus dither, 4 focus full
+function buildBrain(w, h, mode, ink) {
+  const reg = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      reg[y * w + x] = brainRegion(((x + 0.5) / w) * 2 - 1, ((y + 0.5) / h) * 2 - 1);
+    }
+  }
+  const R = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? 0 : reg[y * w + x];
+  const c = makeCanvas(w, h);
+  const pg = g, pcx = camX, pcy = camY;
+  useCtx(c.getContext('2d')); camX = 0; camY = 0;
+  const detailed = w >= 40;
+  const MAPC = [0, TED, IND2, IND, PLM, IND, IND];
+  const MAPH = [0, TEA, PLM, IND2, ROS, IND2, IND2];
+  const MAPS = [0, NV3, IND, NV3, IND2, NV3, NV3];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const r = R(x, y);
+      if (!r) continue;
+      const u = ((x + 0.5) / w) * 2 - 1, v = ((y + 0.5) / h) * 2 - 1;
+      const edgeTL = !R(x - 1, y) || !R(x, y - 1);
+      const edgeBR = !R(x + 1, y) || !R(x, y + 1);
+      const rr = R(x + 1, y), rd = R(x, y + 1);
+      const bnd = (rr && rr !== r) || (rd && rd !== r);
+      const mainBnd = bnd && (r === 4 || rr === 4 || rd === 4 || r === 5 || rr === 5 || rd === 5 ||
+        (r === 1 && (rr === 2 || rd === 2)) || (r === 2 && (rr === 1 || rd === 1)));
+      const hi = !R(x - 2, y - 2);
+      const sh = !R(x + 2, y + 2);
+      let sulc = false;
+      if (detailed && r <= 4) {
+        const f = Math.sin(u * 10 + 1.7 * Math.sin(v * 7)) * Math.sin(v * 9 + 1.5 * Math.sin(u * 6));
+        sulc = Math.abs(f) < 0.12;
+      }
+      let col = -1;
+      if (mode === 0) {
+        col = IND2;
+        if (r === 5) col = (y & 1) ? IND : IND2;
+        if (r === 6) col = IND;
+        if (hi) col = PLM;
+        if (sh) col = IND;
+        if (sulc && !edgeTL && !edgeBR) col = NV3;
+        if (mainBnd) col = NV3;
+        if (edgeTL) col = ROS; else if (edgeBR) col = NV3;
+      } else if (mode === 1) {
+        col = MAPC[r];
+        if (r === 5 && (y & 1)) col = MAPS[r];
+        if (hi) col = MAPH[r];
+        if (sh) col = MAPS[r];
+        if (sulc && !edgeTL && !edgeBR && ((x + y) & 1)) col = MAPS[r];
+        if (bnd) col = NV2;
+        if (edgeTL) col = MAPH[r]; else if (edgeBR) col = NV2;
+      } else if (mode === 2) {
+        if (edgeTL || edgeBR || (mainBnd && r !== 6)) col = ink;
+      } else if (mode === 3) {
+        if (r === 4 && ((x + y) & 1)) col = VIO;
+      } else if (mode === 4) {
+        if (r === 4) {
+          col = VIO;
+          if (hi || edgeTL) col = VIL;
+          if (sulc && ((x + y) & 1)) col = IND2;
+          if (edgeBR || bnd) col = PLM;
+        }
+      }
+      if (col >= 0) px(x, y, col);
+    }
+  }
+  camX = pcx; camY = pcy; useCtx(pg);
+  return { c: c, reg: reg, w: w, h: h };
+}
+
+// Neural network over the big brain: nodes + edges (precomputed once).
+const NODE_MAX = 18;
+const nodeX = new Int16Array(NODE_MAX), nodeY = new Int16Array(NODE_MAX);
+let nodeN = 0;
+const adj = new Uint8Array(NODE_MAX * NODE_MAX);
+const edgeA = new Uint8Array(64), edgeB = new Uint8Array(64);
+let edgeN = 0;
+const focusNbr = new Uint8Array(NODE_MAX);
+let focusNbrN = 0;
+
+function buildNetwork(B) {
+  reseed(7);
+  nodeX[0] = 44; nodeY[0] = 43; nodeN = 1; // focus (temporal region)
+  let tries = 0;
+  while (nodeN < 16 && tries < 4000) {
+    tries++;
+    const x = 4 + Math.floor(rnd() * (B.w - 8)), y = 4 + Math.floor(rnd() * (B.h - 8));
+    const r = B.reg[y * B.w + x];
+    if (r < 1 || r > 5) continue;
+    let ok = true;
+    for (let i = 0; i < nodeN; i++) if (sq(nodeX[i] - x) + sq(nodeY[i] - y) < 150) { ok = false; break; }
+    if (!ok) continue;
+    nodeX[nodeN] = x; nodeY[nodeN] = y; nodeN++;
+  }
+  for (let i = 0; i < nodeN; i++) {
+    // connect each node to its two nearest neighbors
+    for (let k = 0; k < 2; k++) {
+      let best = -1, bd = 1e9;
+      for (let j = 0; j < nodeN; j++) {
+        if (j === i || adj[i * NODE_MAX + j]) continue;
+        const d = sq(nodeX[i] - nodeX[j]) + sq(nodeY[i] - nodeY[j]);
+        if (d < bd) { bd = d; best = j; }
+      }
+      if (best >= 0 && edgeN < 64) {
+        adj[i * NODE_MAX + best] = 1; adj[best * NODE_MAX + i] = 1;
+        edgeA[edgeN] = i; edgeB[edgeN] = best; edgeN++;
+      }
+    }
+  }
+  focusNbrN = 0;
+  for (let j = 1; j < nodeN; j++) if (adj[j]) focusNbr[focusNbrN++] = j;
+  const c = makeCanvas(B.w, B.h);
+  const pg = g, pcx = camX, pcy = camY;
+  useCtx(c.getContext('2d')); camX = 0; camY = 0;
+  for (let e = 0; e < edgeN; e++) {
+    line(nodeX[edgeA[e]], nodeY[edgeA[e]], nodeX[edgeB[e]], nodeY[edgeB[e]], TED, 2, e);
+  }
+  for (let i = 0; i < nodeN; i++) px(nodeX[i], nodeY[i], TEA);
+  camX = pcx; camY = pcy; useCtx(pg);
+  return c;
+}
+
+// Brain placement for the big scenes; focus in screen space.
+const BX = 40, BY = 8;
+const FOCX = BX + 44, FOCY = BY + 43;
+
+// =====================================================================
+// 7. EEG RENDERER
+// =====================================================================
+// Mix weights for the four EEG states: NORMAL, ABNORMAL, LOCALIZED, POST_SURGERY.
+const EEGW = new Float32Array(4);
+function setEEG(n, a, l, p) { EEGW[0] = n; EEGW[1] = a; EEGW[2] = l; EEGW[3] = p; }
+
+function spikeShape(p) {
+  if (p === 0) return 0.15;
+  if (p === 1) return 1;
+  if (p === 2) return -0.35;
+  if (p >= 3 && p <= 7) return -0.42 * Math.sin(Math.PI * (p - 2) / 6);
+  return 0;
+}
+function eegValue(n) {
+  let v = 0;
+  if (EEGW[0] > 0) v += EEGW[0] * (0.22 * vnoise(n * 0.4) + 0.12 * Math.sin(n * 0.8));
+  if (EEGW[1] > 0) {
+    const per = 11, k = Math.floor(n / per);
+    const p = n - k * per - Math.floor(hash1(k) * 4);
+    v += EEGW[1] * (spikeShape(p) * (0.65 + 0.35 * hash1(k + 7)) + 0.3 * vnoise(n * 0.7));
+  }
+  if (EEGW[2] > 0) {
+    const p = ((n % 16) + 16) % 16;
+    v += EEGW[2] * (spikeShape(p) + 0.08 * vnoise(n * 0.5));
+  }
+  if (EEGW[3] > 0) v += EEGW[3] * (0.08 * vnoise(n * 0.3) + 0.12 * Math.sin(n * 0.22));
+  return v;
+}
+function eegScroll(t) { return Math.floor(t * 12) * 2; } // 12 fps steps, 2 samples each
+
+// drawEEG: samples are anchored to screen columns, so the trace scrolls left.
+function drawEEG(x, y, w, h, scroll, c, cDim, cHead) {
+  const mid = y + (h >> 1), amp = (h >> 1) - 1;
+  let prev = mid;
+  const dimEnd = w >> 2;
+  for (let i = 0; i < w; i++) {
+    const n = x + i + scroll;
+    const yy = mid - Math.round(eegValue(n) * amp);
+    const col = i < dimEnd ? cDim : c;
+    if (i === 0) px(x, yy, col);
+    else {
+      const a = prev < yy ? prev : yy, b = prev < yy ? yy : prev;
+      rect(x + i, a, 1, b - a + 1, col);
+    }
+    prev = yy;
+  }
+  if (cHead >= 0) glow(x + w - 1, prev, 2, cHead, c, c);
+}
+
+// A framed EEG strip with a baseline grid.
+function eegStrip(x, y, w, h, scroll, label) {
+  rect(x - 3, y - 2, w + 6, h + 4, BLK);
+  rect(x - 3, y - 2, w + 6, 1, NV3);
+  rect(x - 3, y + h + 1, w + 6, 1, NV3);
+  const mid = y + (h >> 1);
+  for (let i = 0; i < w; i += 4) px(x + i, mid, NV2);
+  drawEEG(x, y, w, h, scroll, CYN, TEA, CYL);
+  if (label) drawPixelText('EEG', x - 2 + camX, y - 8 + camY, TED, 0, 1, 1, -1);
+}
+
+// =====================================================================
+// 8. HOSPITAL RENDERER
+// =====================================================================
+function drawPalm(x, y, h, c, c2) {
+  for (let i = 0; i < h; i++) px(x + Math.round(Math.sin(i * 0.12) * 2), y - i, c);
+  const tx = x + Math.round(Math.sin(h * 0.12) * 2), ty = y - h;
+  // drooping fronds
+  for (let k = 0; k < 7; k++) {
+    px(tx - k, ty + (k * k >> 3), c); px(tx + k, ty + (k * k >> 3), c);
+    if (k < 5) { px(tx - k, ty - 1 + (k * k >> 2), c2); px(tx + k, ty - 1 + (k * k >> 2), c2); }
+  }
+  px(tx, ty - 1, c); px(tx - 1, ty - 2, c); px(tx + 1, ty - 2, c);
+}
+
+// Saudi hospital (bottom-left anchored at bx, by). No real logos or signage text.
+function drawHospital(bx, by, lit) {
+  // wings
+  rect(bx - 14, by - 24, 14, 24, NV3);
+  rect(bx + 84, by - 24, 14, 24, NV3);
+  rect(bx - 14, by - 24, 14, 1, IND);
+  rect(bx + 84, by - 24, 14, 1, IND);
+  // main block
+  rect(bx, by - 38, 84, 38, IND);
+  rect(bx, by - 38, 84, 1, PLM);
+  rect(bx, by - 37, 1, 37, IND2);
+  rect(bx, by - 40, 84, 2, NV3); // parapet
+  rect(bx + 8, by - 43, 9, 3, NV3); // rooftop plant room
+  rect(bx + 66, by - 42, 6, 2, NV3);
+  // central tower
+  rect(bx + 30, by - 54, 24, 16, IND);
+  rect(bx + 30, by - 54, 24, 1, PLM);
+  rect(bx + 30, by - 53, 1, 15, IND2);
+  rect(bx + 41, by - 60, 1, 6, IND2); // antenna
+  // windows
+  for (let j = 0; j < 5; j++) {
+    for (let i = 0; i < 12; i++) {
+      const wx = bx + 3 + i * 7, wy = by - 35 + j * 6;
+      if (j >= 3 && i >= 4 && i <= 7) continue; // entrance zone
+      const hsh = hash2(i * 3 + 11, j * 7 + 5);
+      if (hsh < lit) {
+        const cyan = hash2(i + 40, j + 90) > 0.82;
+        rect(wx, wy, 4, 3, cyan ? TEA : GLD);
+        rect(wx, wy, 4, 1, cyan ? CYN : GLL);
+      } else {
+        rect(wx, wy, 4, 3, NV2);
+      }
+    }
+  }
+  for (let j = 0; j < 3; j++) {
+    for (let i = 0; i < 3; i++) {
+      const wx = bx + 33 + i * 7, wy = by - 51 + j * 4;
+      if (j === 2) continue;
+      rect(wx, wy, 4, 2, hash2(i + 5, j + 3) < lit ? GLD : NV2);
+    }
+    for (let i = 0; i < 2; i++) {
+      rect(bx - 11 + i * 6, by - 20 + j * 6, 3, 3, hash2(i + 21, j) < lit * 0.7 ? SKD : NV2);
+      rect(bx + 88 + i * 6, by - 20 + j * 6, 3, 3, hash2(i + 31, j) < lit * 0.7 ? SKD : NV2);
+    }
+  }
+  // signage bar (abstract lights only) and canopy
+  rect(bx + 33, by - 17, 18, 3, NV1);
+  for (let i = 0; i < 16; i += 2) px(bx + 34 + i, by - 16, (i & 2) ? CYN : TEA);
+  rect(bx + 31, by - 12, 22, 1, PLM);
+  // entrance: three pointed arches
+  for (let k = 0; k < 3; k++) {
+    const ax = bx + 33 + k * 6;
+    rect(ax, by - 9, 5, 9, IND2);
+    rect(ax + 1, by - 8, 3, 8, SKD);
+    rect(ax + 1, by - 3, 3, 3, GLD);
+    px(ax + 2, by - 10, IND2);
+    px(ax + 2, by - 9, SKD);
+  }
+}
+
+// Small window vignettes showing the program inside the hospital.
+function drawPanel(x, y, kind, t, sc) {
+  rect(x, y, 18, 11, GRY);
+  rect(x + 1, y + 1, 16, 9, NV1);
+  if (kind === 0) {
+    setEEG(0.3, 0, 0.7, 0);
+    drawEEG(x + 2, y + 2, 14, 7, sc, CYN, TEA, -1);
+  } else if (kind === 1) {
+    drawImg(BRAIN_TINY_MAP.c, x + 2, y + 1);
+    if ((Math.floor(t * 4) & 1) === 0) px(x + 2 + 6, y + 1 + 5, CYL);
+  } else if (kind === 2) {
+    rect(x + 6, y + 1, 6, 1, OFW);
+    for (let i = 0; i < 4; i++) px(x + 7 + i, y + 3 + (i & 1), IND2);
+    rect(x + 3, y + 7, 12, 1, GRY);
+    rect(x + 5, y + 6, 8, 1, TEA);
+    rect(x + 13, y + 3, 2, 3, TEA);
+  } else {
+    rect(x + 2, y + 7, 10, 1, GRY);
+    rect(x + 4, y + 6, 8, 1, TED);
+    rect(x + 2, y + 5, 2, 2, SKN);
+    rect(x + 12, y + 2, 4, 3, NV3);
+    if ((Math.floor(t * 6) & 1) === 0) px(x + 13, y + 3, CYN);
+    px(x + 14, y + 3, CYN);
+  }
+}
+
+// =====================================================================
+// 9. SAUDI MAP RENDERER
+// =====================================================================
+// Very simplified outline (lon, lat pairs). No political detail.
+const SAUDI_POLY = new Float32Array([
+  36.5, 29.4, 37.0, 31.5, 38.0, 32.0, 39.2, 32.15, 40.4, 31.9, 42.0, 31.1, 44.7, 29.2,
+  46.5, 29.1, 47.5, 28.5, 48.4, 28.0, 48.8, 27.6, 49.6, 26.7, 50.1, 26.2, 50.2, 25.6,
+  50.8, 24.8, 51.6, 24.3, 52.0, 23.0, 55.2, 22.7, 55.7, 22.0, 55.0, 20.0, 52.0, 19.0,
+  49.0, 18.6, 48.2, 18.2, 47.0, 17.0, 46.2, 17.3, 45.2, 17.4, 44.0, 17.4, 43.3, 17.6,
+  43.0, 16.7, 42.8, 16.4, 42.6, 16.8, 42.2, 17.6, 41.6, 18.3, 40.8, 19.6, 39.8, 20.6,
+  39.1, 21.6, 39.0, 22.4, 38.5, 23.6, 37.7, 24.2, 37.2, 24.9, 36.6, 25.8, 36.0, 26.8,
+  35.2, 27.9, 34.6, 28.1, 34.9, 29.0, 36.0, 29.2
+]);
+function mapX(lon) { return 42 + (lon - 34) * 3.6; }
+function mapY(lat) { return 4 + (32.5 - lat) * 3.6; }
+const JED_X = Math.round(mapX(39.3)), JED_Y = Math.round(mapY(21.5));
+const mapEdgeX = new Int16Array(600), mapEdgeY = new Int16Array(600);
+let mapEdgeN = 0;
+
+function inPoly(x, y) {
+  let inside = false;
+  const n = SAUDI_POLY.length / 2;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = mapX(SAUDI_POLY[i * 2]), yi = mapY(SAUDI_POLY[i * 2 + 1]);
+    const xj = mapX(SAUDI_POLY[j * 2]), yj = mapY(SAUDI_POLY[j * 2 + 1]);
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+function buildSaudiMap() {
+  const m = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) m[y * W + x] = inPoly(x + 0.5, y + 0.5) ? 1 : 0;
+  const Mv = (x, y) => (x < 0 || y < 0 || x >= W || y >= H) ? 0 : m[y * W + x];
+  const c = makeCanvas(W, H);
+  const pg = g, pcx = camX, pcy = camY;
+  useCtx(c.getContext('2d')); camX = 0; camY = 0;
+  mapEdgeN = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (!Mv(x, y)) continue;
+      const edge = !Mv(x - 1, y) || !Mv(x + 1, y) || !Mv(x, y - 1) || !Mv(x, y + 1);
+      if (edge) {
+        px(x, y, TEA);
+        if (mapEdgeN < 600) { mapEdgeX[mapEdgeN] = x; mapEdgeY[mapEdgeN] = y; mapEdgeN++; }
+      } else if ((x + y) % 4 === 0) px(x, y, IND);
+      else if ((x * 3 + y) % 7 === 0) px(x, y, NV3);
+    }
+  }
+  camX = pcx; camY = pcy; useCtx(pg);
+  return c;
+}
+
+// A stylized dotted world map: [row, colStart, colEnd] runs on a 4px grid.
+const WORLD_RUNS = new Int8Array([
+  1, 4, 10, 1, 12, 14, 1, 20, 22, 1, 24, 38,
+  2, 2, 12, 2, 13, 15, 2, 19, 23, 2, 24, 38,
+  3, 1, 11, 3, 18, 24, 3, 25, 37,
+  4, 4, 11, 4, 17, 23, 4, 25, 35,
+  5, 5, 10, 5, 17, 22, 5, 23, 24, 5, 26, 34,
+  6, 6, 9, 6, 17, 21, 6, 23, 25, 6, 27, 29, 6, 31, 33,
+  7, 8, 9, 7, 18, 21, 7, 24, 25, 7, 28, 28, 7, 32, 33,
+  8, 10, 13, 8, 20, 22, 8, 33, 34,
+  9, 10, 14, 9, 20, 22,
+  10, 11, 14, 10, 21, 22, 10, 33, 37,
+  11, 11, 13, 11, 21, 21, 11, 32, 37,
+  12, 11, 12, 12, 35, 36,
+  13, 11, 11
+]);
+const LON_X = 42, LON_Y = 24;  // London, Ontario (approximate grid position)
+const JW_X = 94, JW_Y = 32;    // Jeddah on the world grid
+
+function drawWorldDots(p, t) {
+  for (let i = 0; i < WORLD_RUNS.length; i += 3) {
+    const r = WORLD_RUNS[i];
+    for (let cI = WORLD_RUNS[i + 1]; cI <= WORLD_RUNS[i + 2]; cI++) {
+      const h = hash2(cI, r);
+      if (h > p) continue;
+      const tw = hash2(cI * 7 + r, Math.floor(t * 3));
+      px(2 + cI * 4, 8 + r * 4, tw > 0.9 ? IND2 : (h < 0.5 ? IND : NV3));
+    }
+  }
+}
+
+// Night sky star field (preallocated).
+const STAR_N = 56;
+const starX = new Int16Array(STAR_N), starY = new Int16Array(STAR_N);
+function buildStars() {
+  reseed(99);
+  for (let i = 0; i < STAR_N; i++) { starX[i] = Math.floor(rnd() * W); starY[i] = Math.floor(rnd() * 60); }
+}
+function drawStars(maxY, p, t) {
+  const n = Math.floor(STAR_N * p);
+  for (let i = 0; i < n; i++) {
+    if (starY[i] > maxY) continue;
+    const tw = hash2(i, Math.floor(t * 2 + i * 0.37));
+    px(starX[i], starY[i], tw > 0.93 ? OFW : tw > 0.55 ? IND2 : NV3);
+  }
+}
+
+// =====================================================================
+// 10. PARTICLE POOL  (allocation-free after startup)
+// =====================================================================
+const P_NEURAL = 0, P_EEG = 1, P_SPARK = 2, P_LEGACY = 3, P_DUST = 4;
+const PMAX = 160;
+const parts = [];
+for (let i = 0; i < PMAX; i++) {
+  parts.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, paletteIndex: 0, type: 0,
+    active: false, ramp: 0, mode: 0, sx: 0, sy: 0, tx: 0, ty: 0, delay: 0 });
+}
+let pNext = 0;
+let fadeAbnormal = false;
+
+function spawnParticle(type, ramp, x, y, vx, vy, life) {
+  for (let k = 0; k < PMAX; k++) {
+    const p = parts[pNext];
+    pNext = (pNext + 1) % PMAX;
+    if (p.active) continue;
+    p.active = true; p.type = type; p.ramp = ramp; p.mode = 0;
+    p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.life = life; p.maxLife = life; p.delay = 0;
+    p.paletteIndex = RAMPS[ramp][0];
+    return p;
+  }
+  return null;
+}
+// Travelling particle: moves from (sx,sy) to (tx,ty) over its life.
+function spawnTravel(type, ramp, sx, sy, tx, ty, life, delay) {
+  const p = spawnParticle(type, ramp, sx, sy, 0, 0, life);
+  if (!p) return null;
+  p.mode = 1; p.sx = sx; p.sy = sy; p.tx = tx; p.ty = ty; p.delay = delay || 0;
+  return p;
+}
+function clearParticles() { for (let i = 0; i < PMAX; i++) parts[i].active = false; }
+
+function updateParticles(dt) {
+  for (let i = 0; i < PMAX; i++) {
+    const p = parts[i];
+    if (!p.active) continue;
+    if (p.delay > 0) { p.delay -= dt; continue; }
+    p.life -= dt;
+    if (fadeAbnormal && p.ramp === R_ABN) p.life -= dt * 3;
+    if (p.life <= 0) { p.active = false; continue; }
+    const f = 1 - p.life / p.maxLife;
+    if (p.mode === 1) {
+      p.x = p.sx + (p.tx - p.sx) * f;
+      p.y = p.sy + (p.ty - p.sy) * f;
+    } else {
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.type === P_DUST) p.vx += Math.sin(p.y * 0.3) * dt * 0.5;
+    }
+    const ramp = RAMPS[p.ramp];
+    p.paletteIndex = ramp[Math.min(ramp.length - 1, Math.floor(f * ramp.length))];
+  }
+}
+
+function renderParticles() {
+  for (let i = 0; i < PMAX; i++) {
+    const p = parts[i];
+    if (!p.active || p.delay > 0) continue;
+    const x = Math.round(p.x), y = Math.round(p.y);
+    if (p.type === P_LEGACY) {
+      glow(x, y, 2, p.paletteIndex, GLD, GLD);
+    } else if (p.mode === 1 && (p.type === P_NEURAL || p.type === P_EEG)) {
+      // one-pixel tail behind the head
+      const dx = p.tx - p.sx, dy = p.ty - p.sy;
+      const len = Math.abs(dx) + Math.abs(dy) + 0.001;
+      const ramp = RAMPS[p.ramp];
+      px(Math.round(p.x - dx / len * 1.5), Math.round(p.y - dy / len * 1.5), ramp[Math.min(ramp.length - 1, 2)]);
+      px(x, y, p.paletteIndex);
+    } else {
+      px(x, y, p.paletteIndex);
+    }
+  }
+}
+
+// =====================================================================
+// PRE-RENDERED ASSETS (built once at startup)
+// =====================================================================
+let BRAIN_BIG, BRAIN_BIG_MAP, BRAIN_FOCUS_DITHER, BRAIN_FOCUS_FULL, NET;
+let BRAIN_SMALL_MAP, BRAIN_CHALK, BRAIN_POSTER, BRAIN_TINY_MAP, BRAIN_TINY_INK;
+let SAUDI_MAP;
+let BG_GRID, BG_FACADE, BG_STUDY, BG_OR, FG_OR, BG_PROG, BG_MENTOR, BG_TEACH, BG_HOSP, BG_LEGACY;
+
+function lattice(y0, rows, c, bg) {
+  rect(-M, y0, W + M * 2, rows, bg);
+  for (let y = y0 + 1; y < y0 + rows - 1; y++) {
+    for (let x = -M; x < W + M; x++) {
+      const a = (x + y) & 3, b = (x - y) & 3;
+      if (a === 0 || b === 0) px(x, y, c);
+    }
+  }
+  rect(-M, y0, W + M * 2, 1, c);
+  rect(-M, y0 + rows - 1, W + M * 2, 1, c);
+}
+
+function buildAssets() {
+  BRAIN_BIG = buildBrain(100, 64, 0);
+  BRAIN_BIG_MAP = buildBrain(100, 64, 1);
+  BRAIN_FOCUS_DITHER = buildBrain(100, 64, 3);
+  BRAIN_FOCUS_FULL = buildBrain(100, 64, 4);
+  NET = buildNetwork(BRAIN_BIG);
+  BRAIN_SMALL_MAP = buildBrain(30, 20, 1);
+  BRAIN_CHALK = buildBrain(30, 20, 2, GRY);
+  BRAIN_POSTER = buildBrain(22, 14, 2, PLM);
+  BRAIN_TINY_MAP = buildBrain(14, 9, 1);
+  BRAIN_TINY_INK = buildBrain(9, 6, 2, IND);
+  SAUDI_MAP = buildSaudiMap();
+
+  // faint scan grid for the brain scenes
+  BG_GRID = prerender(() => {
+    rect(-M, -M, W + M * 2, H + M * 2, NV1);
+    for (let y = 2; y < H; y += 8) for (let x = 2; x < W; x += 8) px(x, y, NV2);
+  });
+
+  // Intro: a brick hospital facade at night (London, Ontario)
+  BG_FACADE = prerender(() => {
+    rect(-M, 27, W + M * 2, 50, IND);
+    for (let y = 30; y < 76; y += 3) {
+      for (let x = -M + ((y / 3) & 1) * 3; x < W + M; x += 6) {
+        if (hash2(x, y) < 0.55) px(x, y, NV3);
+        if (hash2(x + 1, y + 7) < 0.18) px(x + 2, y + 1, PLM);
+      }
+    }
+    rect(-M, 27, W + M * 2, 2, PLM);
+    rect(-M, 29, W + M * 2, 1, NV3);
+    for (let k = 0; k < 2; k++) {
+      const wx = k === 0 ? 12 : 128;
+      rect(wx - 2, 34, 24, 28, IND2);
+      rect(wx, 36, 20, 24, NV1);
+      rect(wx, 36, 20, 1, NV2);
+      rect(wx + 9, 36, 2, 24, IND2);
+      rect(wx - 3, 62, 26, 2, PLM);
+      if (k === 1) { rect(wx + 1, 48, 8, 11, NV3); rect(wx + 12, 44, 7, 15, IND); }
+    }
+    rect(-M, 76, W + M * 2, 16, NV2);
+    rect(-M, 76, W + M * 2, 1, NV3);
+  });
+
+  // Intro: the lit study behind the window
+  BG_STUDY = prerender(() => {
+    rect(50, 26, 60, 44, IND2);
+    rect(51, 27, 58, 42, PLM);
+    rect(52, 28, 56, 40, NV3);
+    rect(52, 56, 56, 12, IND);
+    rect(52, 56, 56, 1, IND2);
+    // lamp light on the wall: discrete rings
+    for (let a = 0; a < 40; a++) {
+      const ang = a * 0.157, r = 9 + (a & 1) * 3;
+      px(97 + Math.round(Math.cos(ang) * r), 44 + Math.round(Math.sin(ang) * r * 0.8), IND);
+    }
+    // wall poster with a brain diagram
+    rect(76, 33, 24, 16, GRY);
+    rect(76, 48, 24, 1, VIL);
+    g.drawImage(BRAIN_POSTER.c, 77 + camX, 34 + camY);
+    px(86, 43, ROS);
+    px(88, 33, ROS);
+    // chair
+    rect(56, 45, 2, 14, NV2);
+    rect(57, 61, 10, 2, NV2);
+    rect(58, 63, 1, 4, NV2); rect(65, 63, 1, 4, NV2);
+    // desk
+    rect(72, 56, 34, 2, ROS);
+    rect(72, 56, 34, 1, BRK);
+    rect(74, 58, 2, 9, IND2); rect(102, 58, 2, 9, IND2);
+    rect(76, 58, 26, 3, PLM);
+    // books
+    rect(99, 51, 5, 2, TED); rect(100, 53, 5, 3, ROS); rect(99, 50, 4, 1, GRY);
+    // EEG paper on the desk
+    rect(79, 55, 13, 1, OFW);
+    // desk lamp
+    rect(94, 55, 5, 1, NV2);
+    line(96, 54, 98, 47, IND2); line(98, 47, 95, 43, IND2);
+    rect(91, 42, 6, 2, GLD); rect(91, 44, 6, 1, GLL);
+    for (let i = 0; i < 12; i++) if ((i & 1) === 0) px(84 + i, 55, GLL);
+    // floor
+    rect(52, 66, 56, 2, NV2);
+    // glass glint
+    px(54, 30, IND2); px(55, 30, IND2); px(54, 31, IND2);
+    // sill
+    rect(48, 70, 64, 2, GRY);
+    rect(48, 72, 64, 1, IND2);
+  });
+
+  // Operating room (background + foreground table)
+  BG_OR = prerender(() => {
+    rect(-M, -M, W + M * 2, H + M * 2, NV2);
+    for (let y = 4; y < 64; y += 8) rect(-M, y, W + M * 2, 1, NV3);
+    for (let x = 4; x < W; x += 12) rect(x, -M, 1, 66, NV3);
+    rect(-M, 64, W + M * 2, 30, NV3);
+    rect(-M, 64, W + M * 2, 1, IND);
+    for (let x = 0; x < W; x += 10) rect(x, 65, 6, 1, IND);
+    // ceiling mount + arm
+    rect(70, -M, 10, 3, IND2);
+    rect(74, 1, 2, 6, GRY);
+    line(75, 6, 80, 9, GRY);
+    // light cone: discrete dithered pixels
+    for (let y = 15; y < 46; y++) {
+      const half = 7 + ((y - 15) >> 1);
+      for (let x = 81 - half; x <= 81 + half; x++) {
+        if (hash2(x, y) < 0.09) px(x, y, IND);
+        else if (hash2(x + 3, y) < 0.03) px(x, y, IND2);
+      }
+    }
+    // monitor on a stand
+    rect(135, 38, 2, 26, IND2);
+    rect(130, 63, 12, 1, IND2);
+    rect(121, 19, 31, 19, IND2);
+    rect(122, 20, 29, 17, NV3);
+    rect(123, 21, 27, 15, BLK);
+    px(150, 36, CYN);
+    // instrument tray
+    rect(22, 46, 14, 2, GRY);
+    rect(28, 48, 2, 16, IND2);
+    for (let i = 0; i < 12; i += 3) rect(23 + i, 45, 2, 1, OFW);
+  });
+  FG_OR = prerender(() => {
+    // patient under a surgical drape
+    rect(46, 44, 50, 4, TEA);
+    rect(46, 47, 50, 1, TED);
+    rect(58, 42, 12, 2, TEA);
+    for (let x = 64; x < 94; x += 3) px(x, 44, CYN);
+    rect(96, 42, 6, 5, SKN);
+    rect(96, 42, 6, 2, OFW);
+    rect(96, 47, 6, 1, SKD);
+    // table
+    rect(44, 48, 62, 3, IND2);
+    rect(44, 48, 62, 1, GRY);
+    rect(70, 51, 8, 12, IND);
+    rect(64, 62, 20, 2, IND);
+    // surgical lamp head
+    rect(72, 10, 18, 2, GRY);
+    rect(70, 12, 22, 2, OFW);
+    rect(72, 14, 18, 1, WHT);
+    px(81, 15, WHT);
+  });
+
+  // Epilepsy monitoring room (1977)
+  BG_PROG = prerender(() => {
+    rect(-M, -M, W + M * 2, H + M * 2, NV2);
+    for (let x = 0; x < W; x += 20) rect(x, -M, 1, 72, NV3);
+    rect(-M, 70, W + M * 2, 24, NV3);
+    rect(-M, 70, W + M * 2, 1, IND);
+    // bed
+    rect(112, 56, 44, 3, GRY);
+    rect(112, 59, 44, 2, IND2);
+    rect(113, 61, 2, 9, IND2); rect(153, 61, 2, 9, IND2);
+    rect(112, 50, 2, 10, IND2);
+    rect(114, 53, 6, 3, OFW);
+    rect(118, 54, 36, 2, TED);
+    rect(118, 53, 36, 1, TEA);
+    rect(115, 50, 5, 4, SKN);
+    rect(115, 50, 5, 2, GRY);
+    // monitor
+    rect(126, 20, 27, 19, IND2);
+    rect(127, 21, 25, 17, BLK);
+    rect(138, 39, 2, 11, IND2);
+    // electrode leads
+    line(119, 50, 128, 38, TED, 2, 0);
+  });
+
+  // Saudi hospital interior (mentorship)
+  BG_MENTOR = prerender(() => {
+    rect(-M, -M, W + M * 2, H + M * 2, NV3);
+    lattice(1, 7, PLM, IND);
+    rect(-M, 72, W + M * 2, 22, NV2);
+    rect(-M, 72, W + M * 2, 1, IND2);
+    // board with a cortical map
+    rect(5, 12, 42, 31, GRY);
+    rect(6, 13, 40, 29, NV1);
+    g.drawImage(BRAIN_SMALL_MAP.c, 11 + camX, 17 + camY);
+    rect(5, 43, 42, 1, VIL);
+    // wall details
+    rect(150, 16, 6, 40, IND);
+    for (let y = 18; y < 54; y += 6) rect(151, y, 4, 3, NV2);
+  });
+
+  // Teaching room
+  BG_TEACH = prerender(() => {
+    rect(-M, -M, W + M * 2, H + M * 2, NV2);
+    lattice(1, 6, IND2, NV3);
+    rect(-M, 76, W + M * 2, 18, NV3);
+    rect(-M, 76, W + M * 2, 1, IND);
+    // chalkboard
+    rect(7, 11, 53, 31, PLM);
+    rect(8, 12, 51, 29, TED);
+    for (let i = 0; i < 20; i++) px(10 + ((i * 37) % 47), 14 + ((i * 17) % 25), NV3);
+    g.drawImage(BRAIN_CHALK.c, 16 + camX, 15 + camY);
+    rect(7, 42, 53, 2, ROS);
+    rect(12, 41, 4, 1, OFW);
+    // arched window with night sky and a palm
+    rect(136, 16, 20, 30, IND2);
+    rect(138, 20, 16, 25, BLK);
+    for (let i = 0; i < 6; i++) { rect(139 + i, 19 - (i >> 1), 1, 1, IND2); rect(152 - i, 19 - (i >> 1), 1, 1, IND2); }
+    rect(143, 14, 6, 2, IND2);
+    rect(141, 16, 10, 4, NV1);
+    rect(144, 15, 4, 1, NV1);
+    drawPalm(147, 44, 14, NV3, IND);
+    px(141, 24, OFW); px(151, 30, IND2); px(144, 21, IND2);
+    rect(134, 45, 24, 2, PLM);
+    // chairs
+    for (let k = 0; k < 3; k++) {
+      const cx = 84 + k * 24;
+      rect(cx + 2, 60, 2, 16, IND);
+      rect(cx + 2, 70, 10, 2, IND);
+      rect(cx + 11, 72, 1, 4, IND);
+    }
+  });
+
+  // Saudi hospital exterior (used by the Saudi and legacy scenes)
+  BG_HOSP = prerender(() => {
+    drawPalm(14, 74, 20, NV2, NV3);
+    drawPalm(146, 74, 17, NV2, NV3);
+    drawPalm(136, 74, 11, NV3, NV2);
+    drawHospital(38, 74, 0.55);
+    rect(-M, 74, W + M * 2, 20, NV2);
+    rect(-M, 74, W + M * 2, 1, NV3);
+    for (let x = 0; x < W; x += 7) px(x, 80, NV3);
+  });
+
+  BG_LEGACY = prerender(() => {
+    rect(-M, -M, W + M * 2, 30, BLK);
+    rect(-M, 28, W + M * 2, 30, NV1);
+    for (let x = -M; x < W + M; x += 2) px(x + ((x >> 1) & 1), 28, BLK);
+    rect(-M, 58, W + M * 2, 20, NV2);
+    // moon crescent
+    rect(128, 8, 5, 5, GRY); rect(127, 9, 7, 3, GRY);
+    rect(130, 7, 5, 5, BLK); rect(129, 8, 7, 3, BLK);
+    g.drawImage(BG_HOSP, camX - M, camY - M);
+  });
+}
+
+// =====================================================================
+// 11. SCENE STATE MACHINE
+// =====================================================================
+// Each scene: duration, transition-in length (pixel dissolve from the
+// previous scene; 0 = the scenes are choreographed to join seamlessly).
+const S_INTRO = 0, S_DISCOVERY = 1, S_LOCALIZATION = 2, S_SURGERY = 3, S_PROGRAM = 4,
+      S_SAUDI = 5, S_MENTOR = 6, S_TEACHING = 7, S_LEGACY = 8, S_MEMORIAL = 9, S_LOOP = 10;
+const SCENES = [
+  { name: 'INTRO',        dur: 5.5, tin: 0,   render: renderIntro },
+  { name: 'DISCOVERY',    dur: 5.5, tin: 0.7, render: renderDiscovery },
+  { name: 'LOCALIZATION', dur: 5.5, tin: 0,   render: renderLocalization },
+  { name: 'SURGERY',      dur: 5.5, tin: 0.7, render: renderSurgery },
+  { name: 'PROGRAM',      dur: 5.5, tin: 0.7, render: renderProgram },
+  { name: 'SAUDI_ARABIA', dur: 6.5, tin: 0.8, render: renderSaudi },
+  { name: 'MENTORSHIP',   dur: 5,   tin: 0.7, render: renderMentorship },
+  { name: 'TEACHING',     dur: 5,   tin: 0.6, render: renderTeaching },
+  { name: 'LEGACY',       dur: 7.5, tin: 0.7, render: renderLegacy },
+  { name: 'MEMORIAL',     dur: 10,  tin: 0,   render: renderMemorial },
+  { name: 'LOOP',         dur: 2,   tin: 0,   render: renderLoop }
+];
+let TOTAL = 0;
+for (let i = 0; i < SCENES.length; i++) { SCENES[i].start = TOTAL; TOTAL += SCENES[i].dur; }
+
+let simT = 0;          // simulation time within the loop (seconds)
+let frameN = 0;        // fixed-step counter
+let curScene = 0, sceneT = 0, prevScene = -1;
+let lastBurst = -1, lastScroll = 0, lastSpikeT = -10, lastBlink = -1;
+
+function sceneIndexAt(t) {
+  for (let i = SCENES.length - 1; i >= 0; i--) if (t >= SCENES[i].start) return i;
+  return 0;
+}
+
+function transitionScene(i) {
+  lastBurst = -1; lastScroll = -1; lastBlink = -1;
+  fadeAbnormal = i >= S_SURGERY && i !== S_LOOP && i !== S_INTRO;
+  if (i === S_INTRO) fadeAbnormal = false;
+  soundTransition(i);
+}
+
+// Scene-specific simulation: particle emitters and sound cues.
+function updateScene(dt) {
+  const lt = sceneT;
+  switch (curScene) {
+    case S_INTRO: {
+      if (lt > 3.6 && frameN % 24 === 0) spawnParticle(P_DUST, R_DUST, 52 + rnd() * 56, 66, (rnd() - 0.5) * 2, -3, 3);
+      break;
+    }
+    case S_DISCOVERY: {
+      if (lt < 2.3 && frameN % 9 === 0) {
+        const e = Math.floor(rnd() * edgeN);
+        const flip = rnd() < 0.5;
+        const a = flip ? edgeA[e] : edgeB[e], b = flip ? edgeB[e] : edgeA[e];
+        spawnTravel(P_NEURAL, R_CALM, BX + nodeX[a], BY + nodeY[a], BX + nodeX[b], BY + nodeY[b], 0.5 + rnd() * 0.4);
+      }
+      if (lt >= 2) {
+        const k = Math.floor((lt - 2) / 0.7);
+        if (k !== lastBurst) {
+          lastBurst = k;
+          for (let i = 0; i < focusNbrN; i++) {
+            const j = focusNbr[i];
+            spawnTravel(P_NEURAL, R_ABN, FOCX, FOCY, BX + nodeX[j], BY + nodeY[j], 0.4);
+            for (let m = 1; m < nodeN; m++) {
+              if (m !== j && adj[j * NODE_MAX + m]) {
+                spawnTravel(P_NEURAL, R_ABN, BX + nodeX[j], BY + nodeY[j], BX + nodeX[m], BY + nodeY[m], 0.45, 0.4);
+              }
+            }
+          }
+          soundClick(0.05);
+        }
+      }
+      if (frameN % 30 === 0) spawnParticle(P_DUST, R_DUST, rnd() * W, 70, 0, -2, 4);
+      break;
+    }
+    case S_LOCALIZATION: {
+      if (frameN % 7 === 0 && lt > 0.8) {
+        const j = 1 + Math.floor(rnd() * (nodeN - 1));
+        spawnTravel(P_NEURAL, R_CALM, BX + nodeX[j], BY + nodeY[j], FOCX, FOCY, 0.6);
+      }
+      const sc = eegScroll(lt + SCENES[S_DISCOVERY].dur);
+      if (lastScroll >= 0 && sc !== lastScroll && lt > 1.0) {
+        for (let n = lastScroll + FOCX + 1; n <= sc + FOCX; n++) {
+          if (((n % 16) + 16) % 16 === 1) {
+            lastSpikeT = simT;
+            if (lt > 1.6) spawnTravel(P_EEG, R_EEG, FOCX, 81, FOCX, FOCY + 1, 0.35);
+            soundClick(0.04);
+          }
+        }
+      }
+      lastScroll = sc;
+      break;
+    }
+    case S_SURGERY: {
+      fadeAbnormal = lt > 2.0;
+      if (lt < 2.0 && frameN % 5 === 0) {
+        const a = rnd() * 6.283;
+        spawnParticle(P_NEURAL, R_ABN, 99 + Math.cos(a) * 3, 42 + Math.sin(a) * 2, Math.cos(a) * 6, Math.sin(a) * 4 - 3, 0.8);
+      }
+      if (lt > 3.6 && frameN % 14 === 0) spawnParticle(P_SPARK, R_CALM, 124 + rnd() * 25, 34, 0, -3, 1.2);
+      break;
+    }
+    case S_PROGRAM: {
+      if (lt > 4.1 && frameN % 3 === 0) {
+        const k = Math.floor(rnd() * 5);
+        spawnParticle(P_SPARK, R_STAR, PROG_X[k] + 10 + (rnd() - 0.5) * 8, 48 + rnd() * 10, (rnd() - 0.5) * 3, -18 - rnd() * 10, 1.6);
+      }
+      break;
+    }
+    case S_SAUDI: {
+      if (lt > 2.4 && lt < 3.4) {
+        for (let k = 0; k < 2; k++) {
+          const e = Math.floor(rnd() * mapEdgeN);
+          const a = rnd() * 6.283;
+          spawnTravel(P_SPARK, R_CALM, mapEdgeX[e] + Math.cos(a) * 40, mapEdgeY[e] + Math.sin(a) * 30, mapEdgeX[e], mapEdgeY[e], 0.6 + rnd() * 0.3);
+        }
+      }
+      if (lt > 5.1 && frameN % 5 === 0) {
+        const k = Math.floor(rnd() * 4);
+        const sx = 40 + k * 21 + 9, sy = 46;
+        const a = -1.2 - rnd() * 0.8 + (k - 1.5) * 0.4;
+        spawnTravel(P_SPARK, R_CALM, sx, sy, sx + Math.cos(a) * 60, sy + Math.sin(a) * 40, 1.4);
+      }
+      break;
+    }
+    case S_MENTOR: {
+      if (lt > 1 && frameN % 12 === 0) spawnParticle(P_DUST, R_DUST, rnd() * W, 72, 0, -2, 3);
+      break;
+    }
+    case S_LEGACY: {
+      if (lt > 5.2 && lt < 6.4 && frameN % 4 === 0) {
+        const k = Math.floor(rnd() * LEG_TINY_N);
+        const hx = LEG_TINY_X[k] + 3, hy = 66;
+        const src = LEG_TINY_SRC[k];
+        spawnTravel(P_LEGACY, R_GOLD, LEG_HX[src], LEG_HY[src], hx, hy, 0.5);
+      }
+      break;
+    }
+    case S_MEMORIAL:
+    case S_LOOP: {
+      const on = memorialBlink(curScene, lt);
+      if (on && !lastBlink) soundPulse();
+      lastBlink = on ? 1 : 0;
+      break;
+    }
+  }
+}
+
+// =====================================================================
+// SCENE RENDERERS
+// =====================================================================
+
+// ----- Scene 1: THE SPARK ---------------------------------------------
+function renderIntro(lt) {
+  camX = 0;
+  camY = lt < 2.3 ? 0 : lt < 3.3 ? 2 : lt < 4.3 ? 1 : 0;
+  clearTo(BLK);
+
+  const fac = seg(lt, 3.0, 4.2);
+  if (fac > 0) {
+    beginLayer();
+    drawBackdrop(BG_FACADE);
+    endLayer(fac);
+  }
+
+  // Rectangular iris: the study window opens around the signal.
+  const win = seg(lt, 2.3, 3.3);
+  if (win > 0) {
+    const q = quant(smooth(win), 10);
+    const hw = Math.max(1, Math.round(q * 32)), hh = Math.max(1, Math.round(q * 24));
+    g.save();
+    g.beginPath();
+    g.rect(80 - hw + camX, 49 - hh + camY, hw * 2, hh * 2);
+    g.clip();
+    drawBackdrop(BG_STUDY);
+    drawStudyFigure(lt);
+    g.restore();
+    curFill = -1;
+  }
+
+  // The single pixel -> pulse -> EEG waveform.
+  if (lt < 0.8) {
+    const k = Math.min(3, Math.floor(lt / 0.8 * 4));
+    px(80, 45, k === 0 ? TED : k === 1 ? TEA : k === 2 ? CYN : CYL);
+  } else if (lt < 1.6) {
+    const ph = ((lt - 0.8) / 0.8) % 1;
+    glow(80, 45, ph < 0.25 ? 3 : ph < 0.5 ? 2 : 1, CYL, CYN, TEA);
+  } else {
+    const gp = seg(lt, 1.6, 2.4), mv = smooth(seg(lt, 2.3, 3.1));
+    const w = Math.round(3 + quant(gp, 8) * 56 + mv * 64) | 1;
+    const h = 3 + 2 * Math.round(gp * 3);
+    const y = Math.round(45 + (80 - 45) * quant(mv, 12)) - (h >> 1);
+    setEEG(1, 0, 0, 0);
+    if (mv > 0.5) {
+      const pcy = camY; camY = 0;
+      rect(80 - (w >> 1) - 3, y - 2, w + 6, h + 4, BLK);
+      camY = pcy;
+    }
+    const pcy = camY; camY = 0;
+    drawEEG(80 - (w >> 1), y, w, h, eegScroll(lt), CYN, TEA, CYL);
+    camY = pcy;
+  }
+
+  drawPixelText('DR. JOHN P. GIRVIN', 80, 6, OFW, 1, 2, rv(lt, 3.3), BLK);
+  drawPixelText('1934 — 2024', 80, 19, GLL, 1, 1, rv(lt, 3.9), BLK);
+}
+
+function drawStudyFigure(lt) {
+  const P = resetPose();
+  P.seated = true;
+  P.facing = 1;
+  const beat = Math.floor(lt * 5);
+  P.arm = 0.42 + ((beat & 1) ? 0.04 : 0);
+  const glance = Math.floor(lt * 0.9) % 3 === 2;
+  P.look = glance ? -1 : 1;
+  P.bob = 0;
+  drawFigure(56, 34, GIRVIN, P);
+  // lamp shade sits in front
+  rect(91, 42, 6, 2, GLD);
+  rect(91, 44, 6, 1, GLL);
+}
+
+// ----- Scene 2: EPILEPSY ------------------------------------------------
+function renderDiscovery(lt) {
+  camX = 0; camY = Math.floor(simT * 0.5) & 1;
+  drawBackdrop(BG_GRID);
+  drawImgDissolve(BRAIN_BIG.c, BX, BY, seg(lt, 0, 0.9));
+  if (lt > 0.4) drawImg(NET, BX, BY);
+
+  const abn = lt >= 2.0;
+  if (abn) {
+    const k = (lt - 2) / 0.7, ph = k - Math.floor(k);
+    if (ph < 0.3) drawImg(BRAIN_FOCUS_DITHER.c, BX, BY);
+    glow(FOCX, FOCY, ph < 0.12 ? 4 : ph < 0.3 ? 3 : 2, ph < 0.12 ? WHT : CYL, VIL, VIO);
+  } else if (lt > 0.9) {
+    glow(FOCX, FOCY, (Math.floor(lt * 3) & 1) ? 2 : 1, CYN, TEA, TED);
+  }
+
+  const w1 = seg(lt, 1.6, 2.4);
+  setEEG(1 - w1, w1, 0, 0);
+  eegStrip(36, 76, 116, 10, eegScroll(lt), lt > 0.8);
+
+  const P = resetPose();
+  P.facing = 1; P.arm = 0.08; P.bob = breath(simT, 0);
+  P.look = abn && (Math.floor(lt * 2) & 1) ? 1 : 0;
+  drawFigure(8, 46, GIRVIN, P);
+}
+
+// ----- Scene 3: LOCALIZATION / BRAIN MAPPING ----------------------------
+function renderLocalization(lt) {
+  camX = 0; camY = Math.floor(simT * 0.5) & 1;
+  const lt2 = lt + SCENES[S_DISCOVERY].dur;
+  drawBackdrop(BG_GRID);
+  drawImg(BRAIN_BIG.c, BX, BY);
+  drawImgDissolve(BRAIN_BIG_MAP.c, BX, BY, seg(lt, 0.3, 1.3));
+  drawImg(NET, BX, BY);
+
+  const hl = seg(lt, 2.0, 3.6);
+  const af = Math.floor(simT * 10);
+  if (hl >= 1) drawImg(BRAIN_FOCUS_FULL.c, BX, BY);
+  else if (hl > 0.5 || (hl > 0 && (af & 1))) drawImg(BRAIN_FOCUS_DITHER.c, BX, BY);
+
+  const since = simT - lastSpikeT;
+  const loc = seg(lt, 0, 1.2);
+  glow(FOCX, FOCY, since < 0.1 ? 4 : since < 0.25 ? 3 : 2,
+       since < 0.1 ? WHT : CYL, loc > 0.5 ? CYN : VIL, loc > 0.5 ? TEA : VIO);
+
+  setEEG(0, 1 - loc, loc, 0);
+  eegStrip(36, 76, 116, 10, eegScroll(lt2), true);
+
+  // thin pixel line from the waveform to the focus
+  const cl = seg(lt, 1.4, 2.4);
+  if (cl > 0) {
+    const y0 = 76, y1 = FOCY + 3;
+    const len = Math.round((y0 - y1) * quant(cl, 12));
+    for (let i = 0; i < len; i += 2) px(FOCX, y0 - i, TEA);
+    if (len > 4) px(FOCX, y0 - ((af * 2) % len), CYL);
+    if (cl >= 1) { px(FOCX - 1, y1, TEA); px(FOCX + 1, y1, TEA); }
+  }
+
+  const P = resetPose();
+  P.facing = 1; P.bob = breath(simT, 0);
+  P.arm = quant(smooth(seg(lt, 2.4, 3.4)), 6) * 0.76;
+  P.point = P.arm > 0.4;
+  drawFigure(8, 46, GIRVIN, P);
+}
+
+// ----- Scene 4: 1974 ------------------------------------------------------
+function renderSurgery(lt) {
+  camX = lt < 2.5 ? 1 : 0; camY = 0;
+  drawBackdrop(BG_OR);
+
+  // monitor EEG: abnormal -> organized -> quiet
+  const org = seg(lt, 1.8, 2.6), post = seg(lt, 3.2, 4.0);
+  setEEG(0, (1 - org), org * (1 - post), post);
+  drawEEG(124, 22, 25, 13, eegScroll(lt), post > 0.5 ? TEA : CYN, TED, post > 0.5 ? CYN : CYL);
+
+  // surgical team as quiet silhouettes, Dr. Girvin at the head of the table
+  const P = resetPose();
+  P.surgical = true; P.facing = 1; P.arm = 0.35; P.sil = IND;
+  drawFigure(4, 31, DOC_T, P);
+  P.sil = -1; P.facing = 1; P.arm = 0.48; P.look = 0;
+  drawFigure(34, 31, DOC_T, P);
+  resetPose();
+  P.surgical = true; P.facing = -1; P.look = 0;
+  P.arm = 0.45 + ((Math.floor(simT * 4) & 3) === 0 ? 0.05 : 0);
+  P.bob = breath(simT, 0.3);
+  drawFigure(98, 31, GIRVIN, P);
+  drawBackdrop(FG_OR);
+
+  drawPixelText('1974', 6, 5, GLL, 0, 2, rv(lt, 0.8), BLK);
+  captionBand(lt, 1.2, 24);
+  drawPixelText('FIRST EPILEPSY SURGERY', 80, 69, OFW, 1, 1, rv(lt, 1.5), -1);
+  drawPixelText('LONDON HEALTH SCIENCES CENTRE', 80, 76, GRY, 1, 1, rv(lt, 2.1), -1);
+  drawPixelText('LONDON, ONTARIO', 80, 83, CYN, 1, 1, rv(lt, 2.7), -1);
+}
+
+// ----- Scene 5: 1977 ------------------------------------------------------
+const PROG_X = new Int16Array([6, 28, 52, 72, 92]);
+const PROG_T = new Float32Array([-1, 0.9, 1.6, 1.9, 2.2]);
+const PROG_F = new Int8Array([1, -1, -1, 1, -1]);
+const PROG_S = [GIRVIN, DOC_B, DOC_T, DOC_A, DOC_R];
+
+function renderProgram(lt) {
+  camX = 0; camY = 0;
+  drawBackdrop(BG_PROG);
+  setEEG(0.6, 0, 0.4, 0);
+  drawEEG(128, 23, 23, 13, eegScroll(lt), CYN, TEA, CYL);
+  if ((Math.floor(simT * 3) & 1) === 0) { px(116, 50, CYN); px(118, 50, CYN); }
+  else px(117, 50, CYL);
+
+  // links between the people (chest height), revealed as each one arrives
+  let visible = 0;
+  for (let i = 0; i < 5; i++) if (lt >= PROG_T[i] + 0.4) visible = i + 1;
+  const phase = Math.floor(simT * 10);
+  for (let i = 0; i < visible - 1; i++) {
+    line(PROG_X[i] + 12, 52, PROG_X[i + 1] + 8, 52, TED, 2, -phase);
+  }
+  if (visible >= 5) line(PROG_X[4] + 14, 52, 126, 34, TED, 2, -phase);
+
+  // people
+  for (let i = 0; i < 5; i++) {
+    const p = PROG_T[i] < 0 ? 1 : seg(lt, PROG_T[i], PROG_T[i] + 0.4);
+    if (p <= 0) continue;
+    const P = resetPose();
+    P.facing = PROG_F[i];
+    P.bob = breath(simT, i * 0.37);
+    P.arm = i === 0 ? 0.3 : (i === 1 ? 0.15 : 0.05);
+    if (p < 1) { beginLayer(); drawFigure(PROG_X[i], 36, PROG_S[i], P); endLayer(p); }
+    else drawFigure(PROG_X[i], 36, PROG_S[i], P);
+  }
+
+  // a single pulse travels the chain
+  if (visible >= 2) {
+    const segs = visible - 1 + (visible >= 5 ? 1 : 0);
+    const pp = (simT * 1.6) % segs;
+    const si = Math.floor(pp), f = quant(pp - si, 8);
+    let ax, ay, bx, by;
+    if (si < visible - 1) { ax = PROG_X[si] + 12; ay = 52; bx = PROG_X[si + 1] + 8; by = 52; }
+    else { ax = PROG_X[4] + 14; ay = 52; bx = 126; by = 34; }
+    glow(lerp(ax, bx, f), lerp(ay, by, f), 2, CYL, CYN, TEA);
+  }
+
+  drawPixelText('1977', 6, 5, GLL, 0, 2, rv(lt, 0.7), BLK);
+  captionBand(lt, 1.1, 18);
+  drawPixelText('EPILEPSY PROGRAM ESTABLISHED', 80, 75, OFW, 1, 1, rv(lt, 1.4), -1);
+  drawPixelText('WITH NEUROLOGIST DR. WARREN BLUME', 80, 82, GRY, 1, 1, rv(lt, 2.1), -1);
+
+  if (lt > 4.3) fadeBlack(seg(lt, 4.3, 5.4) * 0.6);
+}
+
+// ----- Scene 6: THE JOURNEY TO SAUDI ARABIA ------------------------------
+function planePos(f, out) {
+  out[0] = Math.round(lerp(LON_X, JW_X, f));
+  out[1] = Math.round(lerp(LON_Y, JW_Y, f) - 16 * 4 * f * (1 - f));
+}
+const tmpPos = new Float32Array(2);
+
+function renderSaudi(lt) {
+  camX = 0; camY = 0;
+  clearTo(BLK);
+  drawStars(70, seg(lt, 0, 1.0) * 0.6, simT);
+
+  // --- A: world map and the flight
+  const worldOut = seg(lt, 2.4, 3.1);
+  if (worldOut < 1) {
+    beginLayer();
+    drawWorldDots(seg(lt, 0.1, 0.9), simT);
+    // flight trail + airplane
+    const f = smooth(seg(lt, 0.9, 2.4));
+    for (let s = 0; s < f; s += 0.04) { planePos(s, tmpPos); px(tmpPos[0], tmpPos[1], ((s * 25) & 1) ? ROS : GLD); }
+    glow(LON_X, LON_Y, lt < 1.2 ? 2 : 1, CYL, CYN, TEA);
+    if (f > 0 && f < 1) {
+      planePos(f, tmpPos);
+      const x = tmpPos[0], y = tmpPos[1];
+      rect(x - 2, y, 5, 1, OFW); px(x, y - 1, OFW); px(x, y + 1, OFW);
+      px(x - 2, y - 1, GRY); px(x - 2, y + 1, GRY); px(x + 3, y, WHT);
+    }
+    if (lt > 2.2) glow(JW_X, JW_Y, 2, GLL, GLD, ROS);
+    endLayer(1 - worldOut);
+  }
+
+  // --- B: Saudi Arabia emerges; the point moves to Jeddah
+  const mapIn = seg(lt, 2.5, 3.4), mapOut = seg(lt, 4.0, 4.6);
+  if (mapIn > 0 && mapOut < 1) drawImgDissolve(SAUDI_MAP, 0, 0, mapIn * (1 - mapOut));
+  if (lt > 2.4 && lt < 4.3) {
+    const mv = quant(smooth(seg(lt, 2.4, 3.1)), 10);
+    const x = Math.round(lerp(JW_X, JED_X, mv)), y = Math.round(lerp(JW_Y, JED_Y, mv));
+    const gr = seg(lt, 3.1, 3.9);
+    const pul = (Math.floor(simT * 4) & 1);
+    glow(x, y, 2 + Math.floor(gr * 2) + (gr >= 1 ? pul : 0), GLL, GLD, CYN);
+  }
+  captionBand(lt, 2.6, 16);
+  drawPixelText('JEDDAH, SAUDI ARABIA', 80, 79, OFW, 1, 1, rv(lt, 2.8, 4.0), -1);
+
+  // --- C: the hospital emerges from the point
+  const iris = seg(lt, 3.9, 4.8);
+  if (iris > 0) {
+    const q = quant(smooth(iris), 10);
+    const x0 = Math.round(lerp(JED_X, 0, q)), y0 = Math.round(lerp(JED_Y, 0, q));
+    const x1 = Math.round(lerp(JED_X + 1, W, q)), y1 = Math.round(lerp(JED_Y + 1, 74, q));
+    g.save(); g.beginPath(); g.rect(x0, y0, x1 - x0, y1 - y0); g.clip();
+    clearTo(BLK);
+    drawStars(60, 1, simT);
+    drawBackdrop(BG_HOSP);
+    // interconnected vignettes: EEG, brain mapping, operating room, monitoring
+    const sc = eegScroll(lt);
+    let shown = 0;
+    for (let k = 0; k < 4; k++) {
+      const p = seg(lt, 4.8 + k * 0.25, 5.1 + k * 0.25);
+      if (p <= 0) continue;
+      shown = k + 1;
+      const x = 40 + k * 21, y = 38;
+      if (p < 1) { beginLayer(); drawPanel(x, y, k, simT, sc); endLayer(p); }
+      else drawPanel(x, y, k, simT, sc);
+    }
+    const ph = Math.floor(simT * 10);
+    for (let k = 0; k < shown - 1; k++) line(40 + k * 21 + 18, 43, 40 + (k + 1) * 21 - 1, 43, CYN, 2, -ph);
+    g.restore(); curFill = -1;
+    if (iris < 1) {
+      rect(x0, y0, x1 - x0, 1, GLD); rect(x0, y1 - 1, x1 - x0, 1, GLD);
+      rect(x0, y0, 1, y1 - y0, GLD); rect(x1 - 1, y0, 1, y1 - y0, GLD);
+    }
+  }
+  drawPixelText('KING FAISAL SPECIALIST HOSPITAL', 80, 76, OFW, 1, 1, rv(lt, 4.4), -1);
+  drawPixelText('& RESEARCH CENTRE', 80, 83, GLL, 1, 1, rv(lt, 4.9), -1);
+}
+
+// ----- Scene 7: THE PROGRAM (mentorship, cyan -> gold) ------------------
+const MEN_X = new Int16Array([72, 94, 116, 138]);
+const MEN_S = [DOC_A, DOC_S, DOC_G, DOC_B];
+const menPX = new Int16Array(6), menPY = new Int16Array(6);
+function pulseColor(i) { return i <= 1 ? CYN : i === 2 ? -1 : GLD; }
+
+function renderMentorship(lt) {
+  camX = 0; camY = 0;
+  drawBackdrop(BG_MENTOR);
+  const af = Math.floor(simT * 10);
+
+  // focus on the board map
+  const fx = 11 + 13, fy = 17 + 13;
+  glow(fx, fy, (af & 2) ? 2 : 1, CYL, CYN, TEA);
+
+  // Dr. Girvin pointing to the map
+  const P = resetPose();
+  P.facing = -1; P.bob = breath(simT, 0.2);
+  P.arm = 0.35 + quant(smooth(seg(lt, 0.2, 0.9)), 5) * 0.5;
+  P.point = P.arm > 0.6;
+  drawFigure(48, 38, GIRVIN, P);
+
+  // physicians
+  for (let i = 0; i < 4; i++) {
+    const p = i < 3 ? 1 : seg(lt, 3.0, 3.5);
+    if (p <= 0) continue;
+    const Q = resetPose();
+    Q.facing = -1; Q.bob = breath(simT, 0.5 + i * 0.3);
+    Q.look = lt > 1.2 && lt < 3.0 && i < 3 ? -1 : 0;
+    if (p < 1) { beginLayer(); drawFigure(MEN_X[i], 38, MEN_S[i], Q); endLayer(p); }
+    else drawFigure(MEN_X[i], 38, MEN_S[i], Q);
+  }
+
+  // signal path: map -> hand -> physician -> physician ...
+  menPX[0] = fx; menPY[0] = fy;
+  menPX[1] = 42; menPY[1] = 46;
+  for (let i = 0; i < 4; i++) { menPX[i + 2] = MEN_X[i] + 8; menPY[i + 2] = 38 + 2 + 3; }
+  const s = seg(lt, 0.9, 4.3) * 5;
+  const si = Math.min(4, Math.floor(s)), f = quant(s - si, 8);
+  for (let i = 0; i <= si && i < 5; i++) {
+    const done = i < si || s >= 5;
+    const pc = pulseColor(i);
+    const ax = menPX[i], ay = menPY[i];
+    const bx = done ? menPX[i + 1] : Math.round(lerp(menPX[i], menPX[i + 1], f));
+    const by = done ? menPY[i + 1] : Math.round(lerp(menPY[i], menPY[i + 1], f));
+    if (pc >= 0) line(ax, ay - (i >= 1 ? 3 : 0), bx, by - 3, pc === GLD ? ROS : TED, 2, -af);
+    else line(ax, ay - 3, bx, by - 3, (af & 1) ? TED : ROS, 2, -af);
+  }
+  if (s > 0 && s < 5) {
+    const x = Math.round(lerp(menPX[si], menPX[si + 1], f)), y = Math.round(lerp(menPY[si], menPY[si + 1], f)) - 3;
+    const pc = pulseColor(si);
+    const c = pc >= 0 ? pc : ((af & 1) ? CYN : GLD);
+    glow(x, y, 3, c === GLD ? GLL : CYL, c, c === GLD ? ROS : TEA);
+  }
+  // reached physicians keep a small light above them
+  for (let i = 2; i < 6; i++) {
+    if (s >= i - 0.01) {
+      const pc = pulseColor(i - 1);
+      glow(menPX[i], menPY[i] - 8, ((af + i * 3) % 8) < 4 ? 2 : 1, pc === CYN ? CYL : GLL, pc === CYN ? CYN : GLD, GLD);
+    }
+  }
+
+  captionBand(lt, 0.3, 16);
+  drawPixelText('CHAIR, DEPARTMENT OF NEUROSCIENCES', 80, 76, OFW, 1, 1, rv(lt, 0.5), -1);
+  drawPixelText('BUILDING EPILEPSY SURGERY SERVICES', 80, 83, GLL, 1, 1, rv(lt, 1.3), -1);
+}
+
+// ----- Scene 8: TEACHING ------------------------------------------------
+const TEA_X = new Int16Array([84, 108, 132]);
+const TEA_S = [STUDENT_1, STUDENT_2, STUDENT_3];
+
+function renderTeaching(lt) {
+  camX = 0; camY = lt > 2.5 ? 1 : 0;
+  drawBackdrop(BG_TEACH);
+  const af = Math.floor(simT * 10);
+
+  // chalk mark around the focus on the board
+  const fx = 16 + 13, fy = 15 + 13;
+  if (lt > 0.8) {
+    const c = lt > 2.0 ? GLD : GRY;
+    px(fx - 2, fy, c); px(fx + 2, fy, c); px(fx, fy - 2, c); px(fx, fy + 2, c);
+    px(fx - 1, fy - 1, c); px(fx + 1, fy + 1, c); px(fx + 1, fy - 1, c); px(fx - 1, fy + 1, c);
+    if (lt > 2.0) px(fx, fy, GLL);
+  }
+
+  // teacher
+  const P = resetPose();
+  P.facing = -1; P.bob = breath(simT, 0.1);
+  const up = seg(lt, 0.2, 0.8) * (1 - seg(lt, 3.4, 3.9));
+  P.arm = 0.1 + quant(up, 5) * 0.72;
+  P.point = up > 0.6;
+  drawFigure(58, 42, GIRVIN, P);
+
+  // students
+  const look = lt < 1.2 ? 1 : lt < 3.5 ? -1 : 1;
+  for (let i = 0; i < 3; i++) {
+    const Q = resetPose();
+    Q.facing = -1; Q.seated = true;
+    Q.look = look;
+    Q.arm = lt > 3.3 ? 0.5 : 0.3;
+    Q.bob = 0;
+    drawFigure(TEA_X[i], 42, TEA_S[i], Q);
+    // each student's own diagram (clipboard) appears
+    const cp = seg(lt, 3.3, 3.8);
+    if (cp > 0) {
+      const cx = TEA_X[i] - 10, cy = 57;
+      beginLayer();
+      rect(cx, cy, 11, 8, GRY);
+      rect(cx + 1, cy + 1, 9, 6, OFW);
+      drawImg(BRAIN_TINY_INK.c, cx + 1, cy + 1);
+      endLayer(cp);
+      if (lt > 3.9) {
+        const on = ((af + i * 4) % 10) < 6;
+        glow(cx + 4, cy + 5, on ? 2 : 1, GLL, GLD, GLD);
+      }
+    }
+  }
+
+  // the pulse: board -> above the students -> to each student -> their diagrams
+  if (lt > 2.0 && lt < 3.9) {
+    if (lt < 2.6) {
+      const f = quant(smooth(seg(lt, 2.0, 2.6)), 10);
+      const x = lerp(fx, 108, f), y = lerp(fy, 34, f) - Math.sin(f * 3.14) * 6;
+      glow(x, y, 3, GLL, (af & 1) ? CYN : GLD, ROS);
+    } else {
+      const f = quant(smooth(seg(lt, 2.6, 3.8)), 10);
+      for (let i = 0; i < 3; i++) {
+        const tx = TEA_X[i] + 8, ty = 44;
+        const x = f < 0.6 ? lerp(108, tx, f / 0.6) : lerp(tx, TEA_X[i] - 6, (f - 0.6) / 0.4);
+        const y = f < 0.6 ? lerp(34, ty, f / 0.6) : lerp(ty, 62, (f - 0.6) / 0.4);
+        glow(x, y, 2, GLL, GLD, ROS);
+      }
+    }
+  }
+}
+
+// ----- Scene 9: LEGACY ----------------------------------------------------
+const LEG_TINY_N = 7;
+const LEG_TINY_X = new Int16Array([6, 24, 44, 68, 104, 124, 144]);
+const LEG_TINY_T = new Float32Array([5.0, 4.9, 5.2, 5.4, 5.1, 5.3, 5.5]);
+const LEG_TINY_SRC = new Uint8Array([1, 1, 0, 2, 2, 3, 3]);
+// full-size newcomers: x, appear time, spec, facing
+const LEG_X = new Int16Array([40, 14, 92, 116]);
+const LEG_T = new Float32Array([2.2, 4.3, 4.6, 4.9]);
+const LEG_F = new Int8Array([1, 1, -1, -1]);
+const LEG_S = [DOC_A, DOC_S, DOC_G, STUDENT_2];
+const LEG_HX = new Int16Array(4), LEG_HY = new Int16Array(4);
+
+function renderLegacy(lt) {
+  camX = 0; camY = 0;
+  drawBackdrop(BG_LEGACY);
+  drawStars(26, 1, simT);
+  const af = Math.floor(simT * 10);
+
+  // the glowing window behind him
+  const wx = 38 + 3 + 5 * 7, wy = 74 - 35 + 6;
+  rect(wx, wy, 4, 3, GLD); rect(wx, wy, 4, 1, GLL);
+  if ((Math.floor(simT * 1.5) & 1) === 0) {
+    px(wx - 3, wy + 1, GLD); px(wx + 4, wy + 1, GLD); px(wx + 1, wy - 2, GLD); px(wx + 1, wy + 4, GLD);
+  }
+
+  // head points of newcomers (for links and the pulse)
+  for (let i = 0; i < 4; i++) {
+    const x = i === 0 ? legAX(lt) : LEG_X[i];
+    LEG_HX[i] = x + (LEG_F[i] > 0 ? 11 : 8);
+    LEG_HY[i] = 51 + 2 + 4;
+  }
+
+  // distant generation (tiny figures)
+  for (let k = 0; k < LEG_TINY_N; k++) {
+    const p = seg(lt, LEG_TINY_T[k], LEG_TINY_T[k] + 0.4);
+    if (p <= 0) continue;
+    if (p < 1) { beginLayer(); drawTiny(LEG_TINY_X[k], 64, CROWD[k], -1); endLayer(p); }
+    else drawTiny(LEG_TINY_X[k], 64, CROWD[k], -1);
+  }
+  // links to the distant generation
+  for (let k = 0; k < LEG_TINY_N; k++) {
+    if (lt < LEG_TINY_T[k] + 0.3) continue;
+    const s = LEG_TINY_SRC[k];
+    if (lt < LEG_T[s] + 0.4) continue;
+    line(LEG_HX[s], LEG_HY[s] - 6, LEG_TINY_X[k] + 3, 62, PLM, 3, -af);
+  }
+
+  // Dr. Girvin: stands, then walks slowly out of frame
+  const walkT = lt - 1.4;
+  const gx = walkT > 0 ? 64 + Math.floor(walkT * 24) : 64;
+  if (gx < W + 2) {
+    const P = resetPose();
+    P.facing = 1;
+    if (walkT > 0) {
+      P.walk = Math.floor(simT * 7) & 3;
+      P.bob = (P.walk & 1) ? 0 : 1;
+      P.back = P.walk === 1 ? -1 : P.walk === 3 ? 1 : 0;
+      P.arm = P.walk === 1 ? 0.08 : P.walk === 3 ? 0 : 0.04;
+      P.sway = P.walk === 1 ? -1 : 1;
+    } else {
+      P.arm = 0.25; P.bob = breath(simT, 0);
+    }
+    drawFigure(gx, 50, GIRVIN, P);
+  }
+
+  // newcomers
+  for (let i = 0; i < 4; i++) {
+    let p = seg(lt, LEG_T[i], LEG_T[i] + 0.4);
+    if (i === 0) p = lt >= LEG_T[0] ? 1 : 0;
+    if (p <= 0) continue;
+    const Q = resetPose();
+    Q.facing = LEG_F[i];
+    Q.bob = breath(simT, i * 0.4);
+    const x = i === 0 ? legAX(lt) : LEG_X[i];
+    if (i === 0 && lt < 3.9) { Q.walk = Math.floor(simT * 8) & 3; Q.back = Q.walk === 1 ? -1 : Q.walk === 3 ? 1 : 0; }
+    if (i === 0 && lt >= 4.0) Q.arm = 0.3;
+    if (p < 1) { beginLayer(); drawFigure(x, 51, LEG_S[i], Q); endLayer(p); }
+    else drawFigure(x, 51, LEG_S[i], Q);
+  }
+  // links between the newcomers
+  if (lt > 4.7) line(LEG_HX[0], LEG_HY[0] + 6, LEG_HX[1], LEG_HY[1] + 6, ROS, 2, -af);
+  if (lt > 5.0) line(LEG_HX[0], LEG_HY[0] + 6, LEG_HX[2], LEG_HY[2] + 6, ROS, 2, -af);
+  if (lt > 5.3) line(LEG_HX[2], LEG_HY[2] + 6, LEG_HX[3], LEG_HY[3] + 6, ROS, 2, -af);
+
+  // the pulse
+  let x = 92, y = 60, level = 3;
+  if (lt < 3.9) {
+    level = (Math.floor(simT * 3) & 1) ? 3 : 2;
+  } else if (lt < 4.6) {
+    const f = quant(smooth(seg(lt, 3.9, 4.6)), 10);
+    x = lerp(92, LEG_HX[0] + 3, f); y = lerp(60, 64, f);
+  } else if (lt < 6.0) {
+    // travels A -> B -> A -> C -> D
+    const s = seg(lt, 4.6, 6.0) * 4;
+    const si = Math.min(3, Math.floor(s)), f = quant(s - si, 8);
+    const a0 = si === 0 ? 0 : si === 1 ? 1 : si === 2 ? 0 : 2;
+    const a1 = si === 0 ? 1 : si === 1 ? 0 : si === 2 ? 2 : 3;
+    x = lerp(LEG_HX[a0], LEG_HX[a1], f); y = LEG_HY[0] + 6;
+  } else {
+    const f = quant(smooth(seg(lt, 6.0, 6.8)), 10);
+    x = lerp(LEG_HX[3], 80, f); y = lerp(LEG_HY[3] + 6, 45, f);
+    level = 3 + Math.round(f * 2);
+    if (lt > 6.9) level = lt > 7.2 ? 1 : 2;
+  }
+
+  fadeBlack(seg(lt, 6.1, 7.0));
+  const cy = lt < 3.9 ? CYN : GLD;
+  glow(x, y, level, GLL, cy, lt < 3.9 ? TEA : ROS);
+}
+function legAX(lt) { return Math.min(40, -20 + Math.floor(Math.max(0, lt - 2.2) * 36)); }
+
+// ----- Scene 10: MEMORIAL ------------------------------------------------
+function memorialPulseY(lt) {
+  if (lt < 1.0) return 45;
+  if (lt < 1.6) return Math.round(lerp(45, 10, quant(smooth(seg(lt, 1.0, 1.6)), 8)));
+  if (lt < 9.3) return 10;
+  return Math.round(lerp(10, 45, quant(smooth(seg(lt, 9.3, 9.9)), 8)));
+}
+// Blink state for memorial/loop pulses (true = bright).
+function memorialBlink(scene, lt) {
+  if (scene === S_MEMORIAL) return (lt % 1.6) < 0.35;
+  return lt < 0.3 || (lt >= 0.9 && lt < 1.2);
+}
+
+function renderMemorial(lt) {
+  camX = 0; camY = 0;
+  clearTo(BLK);
+  const on = memorialBlink(S_MEMORIAL, lt);
+  glow(80, memorialPulseY(lt), on ? 3 : 2, GLL, on ? GLD : ROS, CYN);
+
+  // Part one: name and dates
+  drawPixelText('IN MEMORY OF', 80, 20, GRY, 1, 1, rv(lt, 1.8, 5.0), -1);
+  drawPixelText('DR. JOHN P. GIRVIN', 80, 29, OFW, 1, 2, rv(lt, 2.2, 5.0), NV3);
+  drawPixelText('1934 — 2024', 80, 44, GLL, 1, 1, rv(lt, 2.7, 5.0), -1);
+  drawPixelText('PIONEER IN EPILEPSY SURGERY', 80, 55, CYN, 1, 1, rv(lt, 3.2, 5.0), -1);
+
+  // Part two: the continuation
+  drawPixelText('HIS WORK CONTINUES THROUGH', 80, 24, OFW, 1, 1, rv(lt, 5.5, 8.8), -1);
+  drawPixelText('THE PEOPLE HE TAUGHT,', 80, 33, OFW, 1, 1, rv(lt, 5.9, 8.8), -1);
+  drawPixelText('THE PROGRAMS HE HELPED BUILD,', 80, 42, OFW, 1, 1, rv(lt, 6.3, 8.8), -1);
+  drawPixelText('AND THE PATIENTS THEY', 80, 51, GLL, 1, 1, rv(lt, 6.7, 8.8), -1);
+  drawPixelText('CONTINUE TO SERVE.', 80, 60, GLL, 1, 1, rv(lt, 6.9, 8.8), -1);
+}
+
+// ----- LOOP: blink, pause, blink, pause, then back to the first pixel ----
+function renderLoop(lt) {
+  camX = 0; camY = 0;
+  clearTo(BLK);
+  if (lt < 0.3) glow(80, 45, 3, GLL, GLD, ROS);
+  else if (lt < 0.9) px(80, 45, GLD);
+  else if (lt < 1.2) glow(80, 45, 3, CYL, GLD, TEA);
+  else if (lt < 1.6) px(80, 45, CYN);
+  else px(80, 45, TED);
+}
+
+// =====================================================================
+// PROCEDURAL SOUND (optional, off by default, Web Audio only)
+// =====================================================================
+let AC = null, master = null, noiseBuf = null, soundOn = false;
+function toggleSound() {
+  if (!AC) {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      AC = new Ctx();
+      master = AC.createGain();
+      master.gain.value = 0.5;
+      master.connect(AC.destination);
+      noiseBuf = AC.createBuffer(1, Math.floor(AC.sampleRate * 0.03), AC.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+    } catch (e) { AC = null; return; }
+  }
+  soundOn = !soundOn;
+  if (soundOn && AC.state === 'suspended') AC.resume();
+}
+function tone(freq, dur, vol, type, endFreq) {
+  if (!soundOn || !AC) return;
+  try {
+    const t = AC.currentTime;
+    const o = AC.createOscillator(), gn = AC.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (endFreq) o.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+    gn.gain.setValueAtTime(0.0001, t);
+    gn.gain.exponentialRampToValueAtTime(vol, t + Math.min(0.08, dur * 0.3));
+    gn.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(gn); gn.connect(master);
+    o.start(t); o.stop(t + dur + 0.05);
+  } catch (e) { /* sound is optional */ }
+}
+function soundClick(vol) {
+  if (!soundOn || !AC) return;
+  try {
+    const s = AC.createBufferSource(), f = AC.createBiquadFilter(), gn = AC.createGain();
+    s.buffer = noiseBuf; f.type = 'bandpass'; f.frequency.value = 2400; gn.gain.value = vol * 0.6;
+    s.connect(f); f.connect(gn); gn.connect(master); s.start();
+  } catch (e) { /* optional */ }
+}
+function soundPulse() { tone(880, 0.35, 0.025, 'sine'); tone(440, 0.5, 0.012, 'sine'); }
+const TRANS_FREQ = [220, 196, 247, 262, 294, 330, 294, 262, 220, 196, 165];
+function soundTransition(i) { tone(TRANS_FREQ[i], 1.4, 0.02, 'triangle'); }
+
+// =====================================================================
+// 12. ANIMATION TIMING  (fixed 60 Hz simulation, render every frame)
+// =====================================================================
+const STEP = 1 / 60;
+let acc = 0, lastNow = 0, paused = false;
+let uiTimer = 5, soundMsg = 0;
+
+function update(dt) {
+  simT += dt;
+  if (simT >= TOTAL) simT -= TOTAL; // loops seamlessly: LOOP ends where INTRO begins
+  frameN++;
+  curScene = sceneIndexAt(simT);
+  sceneT = simT - SCENES[curScene].start;
+  if (curScene !== prevScene) { transitionScene(curScene); prevScene = curScene; }
+  updateScene(dt);
+  updateParticles(dt);
+}
+
+function restart() {
+  simT = 0; frameN = 0; acc = 0;
+  prevScene = -1; curScene = 0; sceneT = 0;
+  clearParticles();
+  reseed(2024);
+}
+
+// =====================================================================
+// 13. INPUT
+// =====================================================================
+function showUI() { uiTimer = 3; }
+function togglePause() { paused = !paused; showUI(); }
+function toggleFullscreen() {
+  const d = document;
+  try {
+    if (!d.fullscreenElement && !d.webkitFullscreenElement) {
+      const el = d.documentElement;
+      if (el.requestFullscreen) el.requestFullscreen();
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    } else if (d.exitFullscreen) d.exitFullscreen();
+    else if (d.webkitExitFullscreen) d.webkitExitFullscreen();
+  } catch (e) { /* not available */ }
+}
+window.addEventListener('keydown', (e) => {
+  const k = e.key;
+  if (k === ' ' || k === 'Spacebar') { e.preventDefault(); togglePause(); }
+  else if (k === 'r' || k === 'R') { restart(); showUI(); }
+  else if (k === 'm' || k === 'M') { toggleSound(); soundMsg = 2; showUI(); }
+  else if (k === 'f' || k === 'F') { toggleFullscreen(); }
+});
+window.addEventListener('pointerdown', (e) => {
+  // The small "SOUND" label (top right) toggles sound for touch users.
+  const r = view.getBoundingClientRect();
+  const lx = (e.clientX - r.left) / r.width * W, ly = (e.clientY - r.top) / r.height * H;
+  if (uiTimer > 0 && lx > W - 44 && ly < 10) { toggleSound(); soundMsg = 2; showUI(); return; }
+  togglePause();
+});
+
+// =====================================================================
+// 14. RENDERING
+// =====================================================================
+function renderScene() {
+  const sc = SCENES[curScene];
+  if (sc.tin > 0 && sceneT < sc.tin) {
+    // Pixel-dissolve from the previous scene (which keeps animating).
+    const pi = (curScene + SCENES.length - 1) % SCENES.length;
+    useCtx(sctx); SCENES[pi].render(SCENES[pi].dur + sceneT);
+    useCtx(actx); sc.render(sceneT);
+    tctx.globalCompositeOperation = 'copy';
+    tctx.drawImage(bufA, 0, 0);
+    tctx.globalCompositeOperation = 'destination-in';
+    tctx.drawImage(MASK[lvl(sceneT / sc.tin)], 0, 0);
+    tctx.globalCompositeOperation = 'source-over';
+    useCtx(sctx);
+    sctx.drawImage(tmpC, 0, 0);
+  } else {
+    useCtx(sctx);
+    sc.render(sceneT);
+  }
+  renderParticles();
+}
+
+function renderUI() {
+  if (uiTimer > 0 || paused) {
+    const p = paused ? 1 : Math.min(1, uiTimer / 0.6);
+    drawPixelText('CLICK PAUSE R RESET F FULL', 2, 2, IND2, 0, 1, p, BLK);
+    drawPixelText(soundOn ? 'M SOUND ON' : 'M SOUND OFF', W - 2, 2, soundMsg > 0 ? TEA : IND2, 2, 1, p, BLK);
+  }
+  if (paused) drawPixelText('PAUSED', W - 2, 84, GRY, 2, 1, 1, BLK);
+}
+
+function render() {
+  renderScene();
+  camX = 0; camY = 0;
+  renderUI();
+  vctx.imageSmoothingEnabled = false;
+  vctx.drawImage(screenC, 0, 0, W * viewScale, H * viewScale);
+}
+
+// =====================================================================
+// 15. MAIN LOOP
+// =====================================================================
+function frame(now) {
+  let dt = (now - lastNow) / 1000;
+  lastNow = now;
+  if (dt > 0.25) dt = 0.25;
+  if (dt < 0) dt = 0;
+  if (!paused) {
+    acc += dt;
+    while (acc >= STEP) { update(STEP); acc -= STEP; }
+  }
+  if (uiTimer > 0) uiTimer -= dt;
+  if (soundMsg > 0) soundMsg -= dt;
+  render();
+  requestAnimationFrame(frame);
+}
+
+buildMasks();
+buildFont();
+buildStars();
+buildAssets();
+resize();
+restart();
+lastNow = performance.now();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
