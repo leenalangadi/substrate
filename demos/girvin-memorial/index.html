@@ -1375,7 +1375,7 @@ const SCENES = [
   { name: 'MENTORSHIP',   dur: 5,   tin: 0.7, render: renderMentorship },
   { name: 'TEACHING',     dur: 5,   tin: 0.6, render: renderTeaching },
   { name: 'LEGACY',       dur: 7.5, tin: 0.7, render: renderLegacy },
-  { name: 'MEMORIAL',     dur: 10,  tin: 0,   render: renderMemorial },
+  { name: 'MEMORIAL',     dur: 14,  tin: 0,   render: renderMemorial },
   { name: 'LOOP',         dur: 2,   tin: 0,   render: renderLoop }
 ];
 let TOTAL = 0;
@@ -1384,7 +1384,7 @@ for (let i = 0; i < SCENES.length; i++) { SCENES[i].start = TOTAL; TOTAL += SCEN
 let simT = 0;          // simulation time within the loop (seconds)
 let frameN = 0;        // fixed-step counter
 let curScene = 0, sceneT = 0, prevScene = -1;
-let lastBurst = -1, lastScroll = 0, lastSpikeT = -10, lastBlink = -1;
+let lastBurst = -1, lastScroll = 0, lastSpikeT = -10;
 
 function sceneIndexAt(t) {
   for (let i = SCENES.length - 1; i >= 0; i--) if (t >= SCENES[i].start) return i;
@@ -1392,10 +1392,9 @@ function sceneIndexAt(t) {
 }
 
 function transitionScene(i) {
-  lastBurst = -1; lastScroll = -1; lastBlink = -1;
+  lastBurst = -1; lastScroll = -1;
   fadeAbnormal = i >= S_SURGERY && i !== S_LOOP && i !== S_INTRO;
   if (i === S_INTRO) fadeAbnormal = false;
-  soundTransition(i);
 }
 
 // Scene-specific simulation: particle emitters and sound cues.
@@ -1426,7 +1425,6 @@ function updateScene(dt) {
               }
             }
           }
-          soundClick(0.05);
         }
       }
       if (frameN % 30 === 0) spawnParticle(P_DUST, R_DUST, rnd() * W, 70, 0, -2, 4);
@@ -1443,7 +1441,6 @@ function updateScene(dt) {
           if (((n % 16) + 16) % 16 === 1) {
             lastSpikeT = simT;
             if (lt > 1.6) spawnTravel(P_EEG, R_EEG, FOCX, 81, FOCX, FOCY + 1, 0.35);
-            soundClick(0.04);
           }
         }
       }
@@ -1493,13 +1490,6 @@ function updateScene(dt) {
         const src = LEG_TINY_SRC[k];
         spawnTravel(P_LEGACY, R_GOLD, LEG_HX[src], LEG_HY[src], hx, hy, 0.5);
       }
-      break;
-    }
-    case S_MEMORIAL:
-    case S_LOOP: {
-      const on = memorialBlink(curScene, lt);
-      if (on && !lastBlink) soundPulse();
-      lastBlink = on ? 1 : 0;
       break;
     }
   }
@@ -2056,8 +2046,8 @@ function legAX(lt) { return Math.min(40, -20 + Math.floor(Math.max(0, lt - 2.2) 
 function memorialPulseY(lt) {
   if (lt < 1.0) return 45;
   if (lt < 1.6) return Math.round(lerp(45, 10, quant(smooth(seg(lt, 1.0, 1.6)), 8)));
-  if (lt < 9.3) return 10;
-  return Math.round(lerp(10, 45, quant(smooth(seg(lt, 9.3, 9.9)), 8)));
+  if (lt < 13.3) return 10;
+  return Math.round(lerp(10, 45, quant(smooth(seg(lt, 13.3, 13.9)), 8)));
 }
 // Blink state for memorial/loop pulses (true = bright).
 function memorialBlink(scene, lt) {
@@ -2083,6 +2073,13 @@ function renderMemorial(lt) {
   drawPixelText('THE PROGRAMS HE HELPED BUILD,', 80, 42, OFW, 1, 1, rv(lt, 6.3, 8.8), -1);
   drawPixelText('AND THE PATIENTS THEY', 80, 51, GLL, 1, 1, rv(lt, 6.7, 8.8), -1);
   drawPixelText('CONTINUE TO SERVE.', 80, 60, GLL, 1, 1, rv(lt, 6.9, 8.8), -1);
+
+  // Part three: credits
+  drawPixelText('MADE BY', 80, 24, GRY, 1, 1, rv(lt, 9.5, 12.9), -1);
+  drawPixelText('LEEN ALANGARI', 80, 32, OFW, 1, 2, rv(lt, 9.8, 12.9), NV3);
+  drawPixelText('PRESIDENT', 80, 48, GLL, 1, 1, rv(lt, 10.3, 12.9), -1);
+  drawPixelText('NEUROSCIENCE INTEREST GROUP', 80, 56, GRY, 1, 1, rv(lt, 10.6, 12.9), -1);
+  drawPixelText('PNU', 80, 66, CYN, 1, 1, rv(lt, 10.9, 12.9), -1);
 }
 
 // ----- LOOP: blink, pause, blink, pause, then back to the first pixel ----
@@ -2097,63 +2094,294 @@ function renderLoop(lt) {
 }
 
 // =====================================================================
-// PROCEDURAL SOUND (optional, off by default, Web Audio only)
+// SOUNDTRACK  (original chiptune, synthesized with Web Audio)
 // =====================================================================
-let AC = null, master = null, noiseBuf = null, soundOn = false;
+// Four NES-style voices: 0 lead pulse (25% duty), 1 arpeggio pulse
+// (12.5% duty), 2 triangle bass, 3 noise ticks. The score is a list of
+// note events in film time, so the music follows the scenes exactly and
+// loops with the animation. Browsers only allow audio after a user
+// gesture, so the first click/tap/key turns the sound on.
+const MU_MAX = 1400;
+const muT = new Float32Array(MU_MAX), muD = new Float32Array(MU_MAX), muV = new Float32Array(MU_MAX);
+const muM = new Uint8Array(MU_MAX), muC = new Uint8Array(MU_MAX);
+let muN = 0;
+
+function noteMidi(s) {
+  const L = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  let i = 1, v = L[s[0]];
+  if (s[1] === '#') { v++; i++; } else if (s[1] === 'b') { v--; i++; }
+  return 12 * (parseInt(s.slice(i), 10) + 1) + v;
+}
+function nt(ch, t, n, d, v) {
+  if (muN >= MU_MAX) return;
+  muT[muN] = t; muM[muN] = typeof n === 'string' ? noteMidi(n) : n;
+  muD[muN] = d; muV[muN] = v; muC[muN] = ch; muN++;
+}
+function arp(t0, t1, chord, step, vol) {
+  const ns = chord.split(' ');
+  let k = 0;
+  for (let t = t0; t < t1 - 0.01; t += step, k++) nt(1, t, ns[k % ns.length], step * 0.8, vol);
+}
+function mel(t0, seq, vol, ch) {
+  let t = t0;
+  const toks = seq.split(' ');
+  for (let i = 0; i < toks.length; i++) {
+    const p = toks[i].split(':'), d = parseFloat(p[1]) * 0.4;
+    if (p[0] !== '-') nt(ch || 0, t, p[0], d * 0.92, vol);
+    t += d;
+  }
+}
+function bass(t, n, d, v) { nt(2, t, n, d, v || 0.22); }
+function tick(t, v, m) { nt(3, t, m || 84, 0.04, v || 0.03); }
+
+function buildScore() {
+  muN = 0;
+  const s = (i) => SCENES[i].start;
+  const A = 0.035, V = 0.08;
+  let b;
+
+  // INTRO: the pixel blinks, then a quiet D minor arpeggio and the theme
+  b = s(S_INTRO);
+  nt(1, b + 0.1, 'A5', 0.12, 0.03); nt(1, b + 0.9, 'A5', 0.12, 0.035); nt(1, b + 1.3, 'D6', 0.12, 0.03);
+  arp(b + 1.6, b + 3.6, 'D4 F4 A4 D5', 0.2, A * 0.8); arp(b + 3.6, b + 5.5, 'Bb3 D4 F4 A4', 0.2, A);
+  bass(b + 1.6, 'D2', 1.9); bass(b + 3.6, 'Bb1', 1.9);
+  mel(b + 3.3, 'A4:2 D5:2 E5:1 F5:3 E5:2', V);
+
+  // DISCOVERY: calm, then unsettled bursts in time with the discharges
+  b = s(S_DISCOVERY);
+  arp(b, b + 1, 'D4 F4 A4 D5', 0.2, A); arp(b + 1, b + 2, 'G3 Bb3 D4 G4', 0.2, A);
+  bass(b, 'D2', 0.95); bass(b + 1, 'G1', 0.95);
+  for (let k = 0; k < 5; k++) {
+    const t = b + 2 + k * 0.7;
+    arp(t, t + 0.7, (k & 1) ? 'C#4 E4 G4 Bb4' : 'D4 F4 Ab4 B4', 0.1, A * 0.9);
+    bass(t, 'A1', 0.3);
+    tick(t, 0.04, 90); tick(t + 0.35 + (k % 3) * 0.05, 0.02, 80);
+  }
+  mel(b + 2.6, 'F5:1 E5:1 D5:1 C#5:4', V * 0.9);
+
+  // LOCALIZATION: a steady pulse and a rising line
+  b = s(S_LOCALIZATION);
+  arp(b, b + 1.6, 'G3 Bb3 D4 G4', 0.2, A); arp(b + 1.6, b + 3.2, 'A3 C#4 E4 A4', 0.2, A);
+  arp(b + 3.2, b + 4.4, 'D4 F4 A4 D5', 0.2, A); arp(b + 4.4, b + 5.5, 'A3 C#4 E4 G4', 0.2, A);
+  bass(b, 'G2', 1.5); bass(b + 1.6, 'A2', 1.5); bass(b + 3.2, 'D2', 1.1); bass(b + 4.4, 'A1', 1.1);
+  for (let t = b + 1.0; t < b + 5.5; t += 2 / 3) tick(t, 0.035, 92);
+  mel(b + 0.8, 'D5:1 E5:1 F5:2 G5:1 A5:3 Bb5:1 A5:2', V);
+
+  // SURGERY: tension that resolves to F major and grows quiet
+  b = s(S_SURGERY);
+  arp(b, b + 1, 'Bb3 D4 F4 A4', 0.1, A * 0.9); arp(b + 1, b + 2, 'A3 C#4 E4 G4', 0.1, A * 0.9);
+  for (let t = b; t < b + 2; t += 0.5) tick(t, 0.03, 88);
+  bass(b, 'Bb1', 0.95); bass(b + 1, 'A1', 0.95);
+  arp(b + 2, b + 3, 'F3 A3 C4 F4', 0.2, A); arp(b + 3, b + 4, 'C4 E4 G4 C5', 0.2, A);
+  arp(b + 4, b + 5.5, 'F4 A4 C5', 0.4, A * 0.7);
+  bass(b + 2, 'F2', 0.95); bass(b + 3, 'C2', 0.95); bass(b + 4, 'F2', 1.5);
+  mel(b + 2.1, 'C5:1 F5:2 E5:1 D5:1 C5:2 A4:3', V);
+
+  // PROGRAM: hopeful; a small note as each person joins
+  b = s(S_PROGRAM);
+  arp(b, b + 1.6, 'F4 A4 C5 F5', 0.2, A); arp(b + 1.6, b + 3.2, 'C4 E4 G4 C5', 0.2, A);
+  arp(b + 3.2, b + 4.4, 'D4 F4 A4 D5', 0.2, A); arp(b + 4.4, b + 5.5, 'Bb3 D4 F4 Bb4', 0.2, A * 0.8);
+  bass(b, 'F2', 1.5); bass(b + 1.6, 'C2', 1.5); bass(b + 3.2, 'D2', 1.1); bass(b + 4.4, 'Bb1', 1.1);
+  nt(1, b + 0.9, 'C6', 0.15, 0.035); nt(1, b + 1.6, 'D6', 0.15, 0.035);
+  nt(1, b + 1.9, 'E6', 0.15, 0.035); nt(1, b + 2.2, 'F6', 0.15, 0.035);
+  mel(b + 2.5, 'A5:1 G5:1 F5:2 G5:1 A5:1 C6:2', V * 0.9);
+
+  // SAUDI ARABIA: travel, a Hijaz-colored line, then D major at the hospital
+  b = s(S_SAUDI);
+  arp(b, b + 2.8, 'D4 F#4 A4 D5', 0.2, A * 0.8); arp(b + 2.8, b + 4, 'G3 Bb3 D4 G4', 0.2, A * 0.8);
+  arp(b + 4, b + 6.5, 'D4 F#4 A4 D5', 0.2, A);
+  bass(b, 'D2', 1.35); bass(b + 1.4, 'D2', 1.35); bass(b + 2.8, 'G1', 1.1); bass(b + 4, 'D2', 2.4);
+  mel(b + 0.5, 'D5:1 Eb5:1 F#5:2 G5:1 A5:2 G5:1 F#5:1 Eb5:1 D5:2', V * 0.85);
+  nt(1, b + 3.1, 'A5', 0.2, 0.035); nt(1, b + 3.5, 'D6', 0.3, 0.035);
+  const panel = ['A5', 'B5', 'C#6', 'D6'];
+  for (let k = 0; k < 4; k++) nt(1, b + 4.8 + k * 0.25, panel[k], 0.15, 0.03);
+
+  // MENTORSHIP: a rising note at each hand-off of the signal
+  b = s(S_MENTOR);
+  arp(b, b + 1.2, 'G3 B3 D4 G4', 0.2, A); arp(b + 1.2, b + 2.4, 'F#3 A3 D4 F#4', 0.2, A);
+  arp(b + 2.4, b + 3.6, 'E3 G3 B3 E4', 0.2, A); arp(b + 3.6, b + 5, 'A3 C#4 E4 A4', 0.2, A);
+  bass(b, 'G2', 1.15); bass(b + 1.2, 'F#2', 1.15); bass(b + 2.4, 'E2', 1.15); bass(b + 3.6, 'A1', 1.35);
+  mel(b + 0.2, 'B4:2 D5:2 A4:2 F#4:2 G4:1 A4:1 B4:2', V * 0.85);
+  const hops = ['D5', 'E5', 'F#5', 'A5', 'B5'];
+  for (let k = 1; k <= 5; k++) nt(1, b + 0.9 + 0.68 * k, hops[k - 1], 0.18, 0.04);
+
+  // TEACHING: a phrase, then three answers (one per student)
+  b = s(S_TEACHING);
+  arp(b, b + 1.2, 'G3 B3 D4 G4', 0.2, A); arp(b + 1.2, b + 2.4, 'A3 C#4 E4 A4', 0.2, A);
+  arp(b + 2.4, b + 3.6, 'B3 D4 F#4 B4', 0.2, A); arp(b + 3.6, b + 5, 'A3 C#4 E4 G4', 0.2, A);
+  bass(b, 'G2', 1.15); bass(b + 1.2, 'A2', 1.15); bass(b + 2.4, 'B1', 1.15); bass(b + 3.6, 'A1', 1.35);
+  mel(b + 0.2, 'D5:1 E5:1 F#5:2 E5:1 D5:1 B4:2', V * 0.85);
+  nt(1, b + 2.0, 'F#5', 0.3, 0.035);
+  nt(1, b + 2.9, 'A5', 0.2, 0.035); nt(1, b + 3.2, 'B5', 0.2, 0.035); nt(1, b + 3.5, 'C#6', 0.2, 0.035);
+  nt(1, b + 3.9, 'D6', 0.4, 0.035);
+
+  // LEGACY: the main theme; a second voice carries it on after he leaves
+  b = s(S_LEGACY);
+  arp(b, b + 1.6, 'D4 F#4 A4 D5', 0.4, A); arp(b + 1.6, b + 3.2, 'B3 D4 F#4 B4', 0.4, A);
+  arp(b + 3.2, b + 4.8, 'G3 B3 D4 G4', 0.4, A); arp(b + 4.8, b + 6.4, 'A3 C#4 E4 A4', 0.4, A);
+  arp(b + 6.4, b + 7.5, 'D4 F#4 A4 D5', 0.4, A * 0.7);
+  bass(b, 'D2', 1.55); bass(b + 1.6, 'B1', 1.55); bass(b + 3.2, 'G1', 1.55); bass(b + 4.8, 'A1', 1.55);
+  bass(b + 6.4, 'D2', 1.1);
+  mel(b + 0.2, 'F#5:2 E5:1 D5:1 A5:4 B5:2 A5:1 F#5:1 G5:2 F#5:2 E5:2', V);
+  mel(b + 4.8, 'D5:1 C#5:1 B4:2 A4:2', 0.035, 1);
+
+  // MEMORIAL: sparse; a soft note on each blink of the pulse, then credits
+  b = s(S_MEMORIAL);
+  bass(b, 'D3', 2.3, 0.18); bass(b + 2.4, 'B2', 2.3, 0.18); bass(b + 4.8, 'G2', 2.3, 0.18); bass(b + 7.2, 'A2', 2.1, 0.18);
+  arp(b, b + 2.4, 'D4 F#4 A4', 0.8, A * 0.6); arp(b + 2.4, b + 4.8, 'B3 D4 F#4', 0.8, A * 0.6);
+  arp(b + 4.8, b + 7.2, 'G3 B3 D4', 0.8, A * 0.6); arp(b + 7.2, b + 9.4, 'A3 C#4 E4', 0.8, A * 0.6);
+  for (let t = 0; t < 9.3; t += 1.6) nt(1, b + t, 'A5', 0.25, 0.025);
+  const c = b + 9.4;
+  arp(c, c + 1.6, 'D4 F#4 A4 D5', 0.4, A * 0.8); arp(c + 1.6, c + 2.8, 'G3 B3 D4 G4', 0.4, A * 0.8);
+  arp(c + 2.8, c + 4.0, 'A3 C#4 E4 A4', 0.4, A * 0.8); arp(c + 4.0, s(S_LOOP), 'D4 F#4 A4', 0.4, A * 0.5);
+  bass(c, 'D2', 1.55); bass(c + 1.6, 'G2', 1.15); bass(c + 2.8, 'A2', 1.15); bass(c + 4.0, 'D2', 0.6);
+  mel(c + 0.1, 'F#5:2 E5:1 D5:1 A5:4 D5:3', V * 0.85);
+
+  // LOOP: blink, pause, blink
+  b = s(S_LOOP);
+  nt(1, b, 'D6', 0.25, 0.03); nt(1, b + 0.9, 'A5', 0.25, 0.03); bass(b, 'D2', 1.8, 0.12);
+
+  // sort events by time (startup only)
+  const idx = [];
+  for (let i = 0; i < muN; i++) idx.push(i);
+  idx.sort((a, z) => muT[a] - muT[z]);
+  const cp = (arr) => { const c2 = arr.slice(0, muN); for (let i = 0; i < muN; i++) arr[i] = c2[idx[i]]; };
+  cp(muT); cp(muD); cp(muV); cp(muM); cp(muC);
+}
+
+// Per-AudioContext instruments (duty-cycle waves + deterministic noise).
+function makeInstruments(ac) {
+  const duty = (d) => {
+    const n = 48, re = new Float32Array(n), im = new Float32Array(n);
+    for (let k = 1; k < n; k++) re[k] = (2 / (k * Math.PI)) * Math.sin(k * Math.PI * d);
+    return ac.createPeriodicWave(re, im);
+  };
+  const noise = ac.createBuffer(1, Math.floor(ac.sampleRate * 0.25), ac.sampleRate);
+  const d = noise.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = hash1(i >> 1) * 2 - 1;
+  return { p25: duty(0.25), p125: duty(0.125), noise: noise };
+}
+// A bus with a gentle echo so the small voices sound cinematic.
+function makeBus(ac, dest, level) {
+  const bus = ac.createGain(); bus.gain.value = level;
+  const dly = ac.createDelay(1), fb = ac.createGain(), wet = ac.createGain();
+  dly.delayTime.value = 0.3; fb.gain.value = 0.28; wet.gain.value = 0.22;
+  bus.connect(dest); bus.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(dest);
+  return bus;
+}
+function mtof(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+
+function playNote(ac, bus, I, ch, when, midi, dur, vol) {
+  const g2 = ac.createGain();
+  g2.connect(bus);
+  let src;
+  if (ch === 3) {
+    src = ac.createBufferSource(); src.buffer = I.noise;
+    const f = ac.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = mtof(midi) * 2;
+    src.connect(f); f.connect(g2);
+  } else {
+    src = ac.createOscillator();
+    if (ch === 2) src.type = 'triangle'; else src.setPeriodicWave(ch === 0 ? I.p25 : I.p125);
+    src.frequency.value = mtof(midi);
+    if (ch === 0 && dur >= 0.7) {
+      // delayed vibrato on long lead notes
+      const lfo = ac.createOscillator(), lg = ac.createGain();
+      lfo.frequency.value = 5.5; lg.gain.setValueAtTime(0, when); lg.gain.linearRampToValueAtTime(9, when + 0.5);
+      lfo.connect(lg); lg.connect(src.detune); lfo.start(when); lfo.stop(when + dur + 0.1);
+    }
+    src.connect(g2);
+  }
+  g2.gain.setValueAtTime(0, when);
+  g2.gain.linearRampToValueAtTime(vol, when + 0.006);
+  g2.gain.linearRampToValueAtTime(vol * 0.7, when + Math.min(0.08, dur * 0.5));
+  g2.gain.setValueAtTime(vol * 0.7, when + dur);
+  g2.gain.linearRampToValueAtTime(0, when + dur + 0.06);
+  src.start(when);
+  src.stop(when + dur + 0.1);
+}
+
+// Live playback: a look-ahead scheduler keyed to the film clock.
+let AC = null, AI = null, master = null, musBus = null, soundOn = false, soundAsked = false;
+let loopCount = 0, musS0 = 0, musC0 = 0, musUntil = 0;
+function filmClock() { return loopCount * TOTAL + simT; }
+
+function startMusic() {
+  if (!AC || !soundOn) return;
+  stopMusic();
+  musBus = makeBus(AC, master, 1);
+  musS0 = filmClock(); musC0 = AC.currentTime + 0.06; musUntil = musS0;
+}
+function stopMusic() {
+  if (!musBus || !AC) { musBus = null; return; }
+  const b = musBus, t = AC.currentTime;
+  try {
+    b.gain.setValueAtTime(b.gain.value, t);
+    b.gain.linearRampToValueAtTime(0, t + 0.08);
+    setTimeout(() => { try { b.disconnect(); } catch (e) { /* already gone */ } }, 200);
+  } catch (e) { /* optional */ }
+  musBus = null;
+}
+function musicTick() {
+  if (!soundOn || !musBus || paused) return;
+  // Re-sync if the film clock and the audio clock drift apart (e.g. a hidden tab).
+  const drift = (AC.currentTime - musC0) - (filmClock() - musS0);
+  if (drift > 0.15 || drift < -0.15) { musS0 = filmClock(); musC0 = AC.currentTime + 0.05; musUntil = musS0; }
+  const until = filmClock() + 0.3;
+  if (until <= musUntil) return;
+  const a = musUntil;
+  for (let L = Math.floor(a / TOTAL); L <= Math.floor(until / TOTAL); L++) {
+    const base = L * TOTAL;
+    for (let i = 0; i < muN; i++) {
+      const t = base + muT[i];
+      if (t < a || t >= until) continue;
+      const when = musC0 + (t - musS0);
+      if (when < AC.currentTime) continue;
+      try { playNote(AC, musBus, AI, muC[i], when, muM[i], muD[i], muV[i]); } catch (e) { /* optional */ }
+    }
+  }
+  musUntil = until;
+}
 function toggleSound() {
+  soundAsked = true;
   if (!AC) {
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
       AC = new Ctx();
       master = AC.createGain();
-      master.gain.value = 0.5;
+      master.gain.value = 2.2;
       master.connect(AC.destination);
-      noiseBuf = AC.createBuffer(1, Math.floor(AC.sampleRate * 0.03), AC.sampleRate);
-      const d = noiseBuf.getChannelData(0);
-      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+      AI = makeInstruments(AC);
     } catch (e) { AC = null; return; }
   }
   soundOn = !soundOn;
-  if (soundOn && AC.state === 'suspended') AC.resume();
+  if (soundOn) {
+    if (AC.state === 'suspended') AC.resume();
+    startMusic();
+  } else stopMusic();
 }
-function tone(freq, dur, vol, type, endFreq) {
-  if (!soundOn || !AC) return;
-  try {
-    const t = AC.currentTime;
-    const o = AC.createOscillator(), gn = AC.createGain();
-    o.type = type;
-    o.frequency.setValueAtTime(freq, t);
-    if (endFreq) o.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
-    gn.gain.setValueAtTime(0.0001, t);
-    gn.gain.exponentialRampToValueAtTime(vol, t + Math.min(0.08, dur * 0.3));
-    gn.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(gn); gn.connect(master);
-    o.start(t); o.stop(t + dur + 0.05);
-  } catch (e) { /* sound is optional */ }
+
+// Renders the whole soundtrack offline (used to export the film as video).
+function renderSoundtrack(sampleRate) {
+  const sr = sampleRate || 44100;
+  const ac = new OfflineAudioContext(2, Math.ceil(sr * TOTAL), sr);
+  const I = makeInstruments(ac);
+  const m = ac.createGain(); m.gain.value = 2.2; m.connect(ac.destination);
+  const bus = makeBus(ac, m, 1);
+  for (let i = 0; i < muN; i++) playNote(ac, bus, I, muC[i], muT[i] + 0.001, muM[i], muD[i], muV[i]);
+  return ac.startRendering();
 }
-function soundClick(vol) {
-  if (!soundOn || !AC) return;
-  try {
-    const s = AC.createBufferSource(), f = AC.createBiquadFilter(), gn = AC.createGain();
-    s.buffer = noiseBuf; f.type = 'bandpass'; f.frequency.value = 2400; gn.gain.value = vol * 0.6;
-    s.connect(f); f.connect(gn); gn.connect(master); s.start();
-  } catch (e) { /* optional */ }
-}
-function soundPulse() { tone(880, 0.35, 0.025, 'sine'); tone(440, 0.5, 0.012, 'sine'); }
-const TRANS_FREQ = [220, 196, 247, 262, 294, 330, 294, 262, 220, 196, 165];
-function soundTransition(i) { tone(TRANS_FREQ[i], 1.4, 0.02, 'triangle'); }
 
 // =====================================================================
 // 12. ANIMATION TIMING  (fixed 60 Hz simulation, render every frame)
 // =====================================================================
 const STEP = 1 / 60;
 let acc = 0, lastNow = 0, paused = false;
-let uiTimer = 5, soundMsg = 0;
+let uiTimer = 8, soundMsg = 0;
 
 function update(dt) {
   simT += dt;
-  if (simT >= TOTAL) simT -= TOTAL; // loops seamlessly: LOOP ends where INTRO begins
+  if (simT >= TOTAL) { simT -= TOTAL; loopCount++; } // LOOP ends where INTRO begins
   frameN++;
   curScene = sceneIndexAt(simT);
   sceneT = simT - SCENES[curScene].start;
@@ -2167,13 +2395,18 @@ function restart() {
   prevScene = -1; curScene = 0; sceneT = 0;
   clearParticles();
   reseed(2024);
+  loopCount = 0;
+  if (soundOn) startMusic();
 }
 
 // =====================================================================
 // 13. INPUT
 // =====================================================================
 function showUI() { uiTimer = 3; }
-function togglePause() { paused = !paused; showUI(); }
+function togglePause() {
+  paused = !paused; showUI();
+  if (paused) stopMusic(); else startMusic();
+}
 function toggleFullscreen() {
   const d = document;
   try {
@@ -2187,6 +2420,7 @@ function toggleFullscreen() {
 }
 window.addEventListener('keydown', (e) => {
   const k = e.key;
+  if (!soundAsked && k !== 'm' && k !== 'M') { toggleSound(); soundMsg = 2; }
   if (k === ' ' || k === 'Spacebar') { e.preventDefault(); togglePause(); }
   else if (k === 'r' || k === 'R') { restart(); showUI(); }
   else if (k === 'm' || k === 'M') { toggleSound(); soundMsg = 2; showUI(); }
@@ -2196,7 +2430,7 @@ window.addEventListener('pointerdown', (e) => {
   // The small "SOUND" label (top right) toggles sound for touch users.
   const r = view.getBoundingClientRect();
   const lx = (e.clientX - r.left) / r.width * W, ly = (e.clientY - r.top) / r.height * H;
-  if (uiTimer > 0 && lx > W - 44 && ly < 10) { toggleSound(); soundMsg = 2; showUI(); return; }
+  if ((uiTimer > 0 && lx > W - 64 && ly < 10) || !soundAsked) { toggleSound(); soundMsg = 2; showUI(); return; }
   togglePause();
 });
 
@@ -2227,8 +2461,9 @@ function renderScene() {
 function renderUI() {
   if (uiTimer > 0 || paused) {
     const p = paused ? 1 : Math.min(1, uiTimer / 0.6);
-    drawPixelText('CLICK PAUSE R RESET F FULL', 2, 2, IND2, 0, 1, p, BLK);
-    drawPixelText(soundOn ? 'M SOUND ON' : 'M SOUND OFF', W - 2, 2, soundMsg > 0 ? TEA : IND2, 2, 1, p, BLK);
+    drawPixelText('SPACE PAUSE  F FULL', 2, 2, IND2, 0, 1, p, BLK);
+    drawPixelText(!soundAsked ? 'TAP FOR SOUND' : soundOn ? 'M SOUND ON' : 'M SOUND OFF', W - 2, 2,
+      (soundMsg > 0 || !soundAsked) ? TEA : IND2, 2, 1, p, BLK);
   }
   if (paused) drawPixelText('PAUSED', W - 2, 84, GRY, 2, 1, 1, BLK);
 }
@@ -2254,6 +2489,7 @@ function frame(now) {
     while (acc >= STEP) { update(STEP); acc -= STEP; }
   }
   if (uiTimer > 0) uiTimer -= dt;
+  musicTick();
   if (soundMsg > 0) soundMsg -= dt;
   render();
   requestAnimationFrame(frame);
@@ -2263,6 +2499,7 @@ buildMasks();
 buildFont();
 buildStars();
 buildAssets();
+buildScore();
 resize();
 restart();
 lastNow = performance.now();
