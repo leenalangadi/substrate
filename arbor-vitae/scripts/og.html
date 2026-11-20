@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>og image</title>
+    <style>
+      html, body { margin: 0; background: #1a0d1b; }
+      #frame { position: relative; width: 1200px; height: 630px; overflow: hidden;
+        background: radial-gradient(ellipse 80% 90% at 68% 50%, #221123 0%, #1a0d1b 55%, #100711 100%); }
+      canvas { position: absolute; inset: 0; }
+      .txt { position: absolute; left: 72px; top: 0; bottom: 0; width: 560px; display: flex; flex-direction: column; justify-content: center; }
+      .mono { font-family: 'JetBrains Mono', monospace; color: rgba(210,188,200,.75); font-size: 20px; letter-spacing: .04em; margin: 0; }
+      h1 { font-family: 'Archivo Black', sans-serif; font-weight: 400; color: #f7f3ee; font-size: 74px; line-height: .93; margin: 22px 0 26px; letter-spacing: -.01em; }
+      .meta { font-family: 'Inter', sans-serif; color: #d2bcc8; font-size: 25px; margin: 0; line-height: 1.4; }
+      .gold { color: #c6a158; }
+    </style>
+  </head>
+  <body>
+    <div id="frame">
+      <canvas id="c" width="1200" height="630"></canvas>
+      <div class="txt">
+        <p class="mono">arbor vitae · NSIG x ENTIG · PNU</p>
+        <h1>WHERE NEUROLOGY MEETS ENT</h1>
+        <p class="meta">Saturday 5 December 2026<br />College of Medicine, PNU</p>
+        <p class="mono" style="margin-top: 28px">every symptom has two roots<span class="gold"> ●</span></p>
+      </div>
+    </div>
+    <script type="module">
+      import '@fontsource/inter/latin-400.css';
+      import '@fontsource/jetbrains-mono/latin-400.css';
+      import '@fontsource/archivo-black/latin-400.css';
+      import { buildTree, renderLayer, BRANCH_SPECS } from '/src/tree.js';
+      const t = buildTree();
+      const c = document.getElementById('c');
+      const ctx = c.getContext('2d');
+      const view = { W: 1200, H: 630, dpr: 1 };
+      const b = t.bounds;
+      const s = 560 / (b.maxY - b.minY + 40);
+      const cam = { x: 0 - (930 - 600) / s, y: (b.minY + b.maxY) / 2 + 10 / s, s };
+      const layers = ['base', ...BRANCH_SPECS.map((x) => x.id)];
+      for (const k of layers) renderLayer(ctx, t.layers[k], cam, view, 1, 1, 1.15);
+      // grain
+      const img = ctx.getImageData(0, 0, 1200, 630);
+      for (let i = 0; i < img.data.length; i += 4) {
+        if (Math.random() < 0.06) { img.data[i] = img.data[i + 1] = img.data[i + 2] = 255; img.data[i + 3] = Math.max(img.data[i + 3], 14); }
+      }
+      ctx.putImageData(img, 0, 0);
+      document.fonts.ready.then(() => (document.body.dataset.ready = '1'));
+    </script>
+  </body>
+</html>

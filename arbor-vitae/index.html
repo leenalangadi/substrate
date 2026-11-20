@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Where Neurology Meets ENT | NSIG x ENTIG</title>
+    <meta name="description" content="Arbor Vitae: a joint clinical workshop by NSIG and ENTIG, Princess Nourah bint Abdulrahman University. Saturday 5 December 2026, College of Medicine, PNU." />
+    <meta name="theme-color" content="#1A0D1B" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Arbor Vitae · NSIG x ENTIG" />
+    <meta property="og:title" content="Where Neurology Meets ENT | NSIG x ENTIG" />
+    <meta property="og:description" content="A joint clinical workshop by NSIG and ENTIG, PNU. Saturday 5 December 2026 · College of Medicine, PNU. Every symptom has two roots." />
+    <meta property="og:url" content="%VITE_SITE_URL%/" />
+    <meta property="og:image" content="%VITE_SITE_URL%/og-image.jpg" />
+    <meta property="og:image:secure_url" content="%VITE_SITE_URL%/og-image.jpg" />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="A stippled lilac tree on a dark plum background beside the title Where Neurology Meets ENT." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Where Neurology Meets ENT | NSIG x ENTIG" />
+    <meta name="twitter:description" content="A joint clinical workshop by NSIG and ENTIG, PNU. Saturday 5 December 2026 · College of Medicine, PNU." />
+    <meta name="twitter:image" content="%VITE_SITE_URL%/og-image.jpg" />
+    <meta name="twitter:image:alt" content="A stippled lilac tree on a dark plum background beside the title Where Neurology Meets ENT." />
+  </head>
+  <body>
+    <div id="app" class="grain">
+      <canvas id="tree" aria-hidden="true"></canvas>
+
+      <header class="brand" id="brand">
+        <p class="mono">arbor vitae</p>
+        <p class="mono">NSIG x ENTIG</p>
+      </header>
+
+      <h1 class="sr-only">Where Neurology Meets ENT. Arbor Vitae, a joint clinical workshop by NSIG and ENTIG, Princess Nourah bint Abdulrahman University. Saturday 5 December 2026, College of Medicine, PNU.</h1>
+
+      <nav id="branches" aria-label="Branches of the tree" class="hidden" inert></nav>
+
+      <div id="hint" class="hint hidden" inert>
+        <p>every symptom has two roots. tap a branch.</p>
+        <button type="button" id="roots-btn" class="mono roots-btn">roots ↓</button>
+      </div>
+
+      <section id="station" class="station" aria-labelledby="station-title" hidden>
+        <div class="station-head">
+          <p class="mono kicker" id="station-kicker"></p>
+          <h2 id="station-title" tabindex="-1"></h2>
+        </div>
+        <div id="station-body"></div>
+      </section>
+
+      <section id="roots" class="roots" aria-labelledby="roots-title" hidden>
+        <h2 id="roots-title" class="sr-only" tabindex="-1">the roots: date, venue and hosts</h2>
+        <div class="lbl root-item" id="root-date"><span class="mono">date</span><span>Saturday 5 December 2026</span></div>
+        <div class="lbl root-item" id="root-venue"><span class="mono">venue</span><span>College of Medicine, PNU</span></div>
+        <div class="lbl root-item" id="root-hosts"><span class="mono">hosted by</span><span>NSIG x ENTIG / PNU</span></div>
+        <div class="lbl logos" id="root-logos">
+          <img class="logo" src="/nsig-logo.png" alt="NSIG, Neuroscience Interest Group" data-fallback="NSIG" />
+          <img class="logo" src="/entig-logo.png" alt="ENTIG, ENT Interest Group" data-fallback="ENTIG" />
+        </div>
+      </section>
+
+      <section id="reveal" class="reveal" aria-labelledby="reveal-title" hidden>
+        <div class="card">
+          <div class="logos">
+            <img class="logo" src="/nsig-logo.png" alt="NSIG, Neuroscience Interest Group" data-fallback="NSIG" />
+            <img class="logo" src="/entig-logo.png" alt="ENTIG, ENT Interest Group" data-fallback="ENTIG" />
+          </div>
+          <p class="mono kicker">NSIG x ENTIG · PNU</p>
+          <h2 id="reveal-title" tabindex="-1">Where Neurology Meets&nbsp;ENT</h2>
+          <p class="mono meta"><span>Saturday 5 December 2026</span><span>College of Medicine, PNU</span></p>
+          <a id="register-link" class="pill pill-big" href="#" target="_blank" rel="noopener">
+            <canvas aria-hidden="true"></canvas><span class="pill-text">register</span><span aria-hidden="true">→</span>
+          </a>
+        </div>
+      </section>
+
+      <div class="bottom-bar">
+        <button type="button" id="back" class="pill back" hidden>
+          <canvas aria-hidden="true"></canvas><span aria-hidden="true">←</span><span class="pill-text">back</span>
+        </button>
+        <button type="button" id="player" class="pill player" aria-pressed="false" aria-label="Play a 2 second 512 hertz tuning fork tone">
+          <canvas aria-hidden="true"></canvas>
+          <span class="play-icon" aria-hidden="true"></span>
+          <canvas class="wave" aria-hidden="true"></canvas>
+          <span class="pill-text">512 Hz: the tuning fork</span>
+        </button>
+      </div>
+
+      <div id="sr-descriptions" class="sr-only"></div>
+      <p id="live" class="sr-only" aria-live="polite"></p>
+    </div>
+
+    <noscript>
+      <div class="noscript">
+        <h2>Where Neurology Meets ENT</h2>
+        <p>A joint clinical workshop by NSIG (Neuroscience Interest Group) and ENTIG (ENT Interest Group), Princess Nourah bint Abdulrahman University (PNU).</p>
+        <p>Saturday 5 December 2026 · College of Medicine, PNU</p>
+        <p>Presented by Dr. Raseel Aljthalin (Board in Adult Neurology) and Dr. Nouf Alammari (ENT Resident). Supervised by Dr. Noura Alharbi (Neurology) and Dr. Nuha Alrayes (ENT).</p>
+      </div>
+    </noscript>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
